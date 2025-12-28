@@ -9,6 +9,8 @@ class LSU extends Module {
   val io = IO(new Bundle {
     // 1. 内部总线接口 (来自 EXU)
     val in = Flipped(Decoupled(new Bundle {
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
       val addr   = UInt(32.W)
       val wdata  = UInt(32.W)
       val func   = FuOpType() // 使用 7 位编码
@@ -17,6 +19,8 @@ class LSU extends Module {
 
     // 2. 输出接口 (去往 WBU)
     val out = Decoupled(new Bundle {
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W) // 透传 rdAddr 给 WBU
       val rfWen  = Bool()    // 告诉 WBU 是否需要写寄存器 (Load需要, Store不需要)
@@ -25,6 +29,9 @@ class LSU extends Module {
     // 3. 外部总线接口 (SimpleBus)
     val bus = new SimpleBus
   })
+
+  io.out.bits.pc   := io.in.bits.pc
+  io.out.bits.dnpc := io.in.bits.dnpc
 
   // --- [1] 状态定义与寄存器 ---
   val s_idle :: s_wait_resp :: Nil = Enum(2)

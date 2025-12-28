@@ -23,6 +23,8 @@ class EXU extends Module with HasInstrType {
 
     // 2. 输出 A：给 LSU (访存指令)
     val lsuOut = Decoupled(new Bundle {
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
       val addr   = UInt(32.W)
       val wdata  = UInt(32.W)
       val func   = FuOpType()     // 直接传 fuOp 过去，LSU 内部有语义函数
@@ -31,9 +33,12 @@ class EXU extends Module with HasInstrType {
 
     // 3. 输出 B：给 WBU (写回单元)
     val wbuOut = Decoupled(new Bundle {
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
       val data   = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
+      val is_csr = Bool()
     })
 
     // 4. 侧面输出：给 IFU (跳转重定向)
@@ -42,6 +47,8 @@ class EXU extends Module with HasInstrType {
     })
   })
 
+  io.lsuOut.bits.pc := io.in.bits.pc
+  io.wbuOut.bits.pc := io.in.bits.pc
   // --- [1] ALU 核心逻辑 ---
   // 利用语义化编码：Bit(3) 是减法/算术右移标志，Bit(2:0) 是功能索引
   val aluOp  = io.in.bits.fuOp
@@ -79,7 +86,11 @@ class EXU extends Module with HasInstrType {
   // 其余指令都是 PC + imm
   val basePC = Mux(aluOp === BRUOpType.jalr, src1, io.in.bits.pc)
   val targetPC = (basePC + io.in.bits.imm) & (~1.U(32.W))
-
+//--仿真需要--
+  io.lsuOut.bits.dnpc := Mux(io.redirect.valid, targetPC, io.lsuOut.bits.pc + 4.U)
+  io.wbuOut.bits.dnpc := Mux(io.redirect.valid, targetPC, io.wbuOut.bits.pc + 4.U)
+  io.wbuOut.bits.is_csr := Mux(io.in.bits.fuType === FuType.csr, true.B, false.B)
+//------------
   io.redirect.valid         := io.in.valid && branchTake
   io.redirect.bits.targetPC := targetPC
 

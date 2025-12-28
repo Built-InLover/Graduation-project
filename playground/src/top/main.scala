@@ -7,7 +7,11 @@ object main extends App {
       "disallowLocalVariables",
       "disallowPackedArrays",
       "locationInfoStyle=wrapInAtSquareBracket"
-    ).reduce(_ + "," + _)
+    ).reduce(_ + "," + _), 
   )
-  circt.stage.ChiselStage.emitSystemVerilogFile(new top.DistributedCore(), args, firtoolOptions)
+
+  val customArgs = Array(
+    "--target-dir", "build"
+  )
+  circt.stage.ChiselStage.emitSystemVerilogFile(new top.DistributedCore(), customArgs, firtoolOptions)
 }

@@ -29,7 +29,7 @@ object FuType {
   def alu = "b000".U
   def lsu = "b001".U
   //def mdu = "b010".U
-  //def csr = "b011".U
+  def csr = "b011".U
   //def mou = "b100".U
   def bru = alu
   def apply() = UInt(log2Up(num).W)

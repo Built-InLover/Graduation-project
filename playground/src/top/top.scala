@@ -5,20 +5,91 @@ import chisel3.util._
 import corewithbus._
 import common._
 
+class RK_DPI extends BlackBox with HasBlackBoxInline {
+  val io = IO(new Bundle {
+    val clock     = Input(Clock())
+    val inst_over = Input(Bool())
+    val pc        = Input(UInt(32.W))
+    val dnpc      = Input(UInt(32.W))
+    val regs      = Input(Vec(32, UInt(32.W)))
+    val ebreak    = Input(Bool()) // 对应 WBU 引出的 ebreak
+  })
+
+  setInline("RK_DPI.v",
+    s"""
+       |// 声明外部 C++ 函数
+       |import "DPI-C" function void set_riscv_regs(input logic[31:0] regs [32]);
+       |import "DPI-C" function void set_pc(input int pc_val);
+       |import "DPI-C" function void set_dnpc(input int dnpc_val);
+       |import "DPI-C" function void check_commit(input bit over);
+       |import "DPI-C" function void trap_handler(input int pc); // 新增：处理 ebreak
+       |
+       |module RK_DPI(
+       |  input clock,
+       |  input inst_over,
+       |  input ebreak,
+       |  input [31:0] pc,
+       |  input [31:0] dnpc,
+       |  input [31:0] regs [31:0]
+       |);
+       |
+       |  always @(posedge clock) begin
+       |    if (inst_over) begin
+       |      set_pc(pc);
+       |      set_dnpc(dnpc);
+       |      set_riscv_regs(regs);
+       |      check_commit(1'b1);
+       |      
+       |      // 如果当前退休的指令是 ebreak，触发 C++ 端的结束逻辑
+       |      if (ebreak) begin
+       |        trap_handler(pc);
+       |      end
+       |    end else begin
+       |      check_commit(1'b0);
+       |    end
+       |  end
+       |
+       |endmodule
+    """.stripMargin)
+}
 class DistributedCore extends Module {
   val io = IO(new Bundle {
     //  对接外部系统总线
     val imem_bus = new SimpleBus // 取指总线
     val dmem_bus = new SimpleBus // 访存总线
+    //  对接仿真系统
+    val debug_pc    = Output(UInt(32.W))
+    val debug_dnpc    = Output(UInt(32.W))
+    val debug_regs  = Output(Vec(32, UInt(32.W)))
+    val inst_over   = Output(Bool())
+    val ebreak = Output(Bool())
   })
 
-  //  例化所有分布式模块
+ // --- [例化模块] ---
   val ifu = Module(new IFU)
   val idu = Module(new IDU)
   val exu = Module(new EXU)
   val lsu = Module(new LSU)
   val wbu = Module(new WBU)
   val rf  = Module(new RegFile)
+  val dpi = Module(new RK_DPI)
+
+// 1. 先从源头获取信号，连给顶层 io
+  // 注意：wbu 后面的信号现在都属于 io 束
+  io.debug_pc   := wbu.io.debug_pc
+  io.debug_dnpc := wbu.io.debug_dnpc
+  io.debug_regs := rf.io.regs    
+  io.inst_over  := wbu.io.inst_over
+  io.ebreak     := wbu.io.ebreak
+
+  // 2. 连给 DPI 模块
+  // 建议直接连 io.xxx，这样逻辑更清晰，也避免了 Chisel 的连接检查报错
+  dpi.io.clock     := clock
+  dpi.io.inst_over := io.inst_over
+  dpi.io.pc        := io.debug_pc
+  dpi.io.dnpc      := io.debug_dnpc
+  dpi.io.regs      := io.debug_regs
+  dpi.io.ebreak    := io.ebreak
 
   // IFU -> IDU: 加入深度为 1 的 Queue，切断组合环路，同时开启pipe，提高IPC
   val ifu_idu_q = Module(new Queue(chiselTypeOf(ifu.io.out.bits), entries = 1, pipe = true))

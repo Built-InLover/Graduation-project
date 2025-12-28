@@ -1,14 +1,14 @@
-package core
+package essentials
 
 import chisel3._
 import chisel3.util._
 
-// object CSROpType {    
-//   def jmp  = "b000".U  
-//   def wrt  = "b001".U  
-//   def set  = "b010".U  
-//   def clr  = "b011".U  
-// }
+object CSROpType {    
+  def jmp  = "b000".U  
+  def wrt  = "b001".U  
+  def set  = "b010".U  
+  def clr  = "b011".U  
+}
 
 // // CSR 地址常量定义
 // object CSRAddress {

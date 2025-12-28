@@ -7,14 +7,19 @@ class WBU extends Module {
   val io = IO(new Bundle {
     // 1. 来自 EXU 的写回请求 (带 rfWen)
     val exuIn = Flipped(Decoupled(new Bundle {
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
       val data   = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
+      val is_csr = Bool()
     }))
 
     // 2. 来自 LSU 的写回请求 (带 rfWen)
     val lsuIn = Flipped(Decoupled(new Bundle {
-      val rdata  = UInt(32.W) // 注意：对于 LSU，这通常是 rdata
+      val pc     = UInt(32.W)
+      val dnpc   = UInt(32.W)
+      val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
     }))
@@ -23,7 +28,22 @@ class WBU extends Module {
     val rf_wen   = Output(Bool())
     val rf_waddr = Output(UInt(5.W))
     val rf_wdata = Output(UInt(32.W))
+
+    //对接顶层和 DPI 的调试接口 ---
+    val debug_pc   = Output(UInt(32.W))
+    val debug_dnpc = Output(UInt(32.W))
+    val inst_over  = Output(Bool())
+    val ebreak     = Output(Bool())
   })
+
+
+  val lsu_fire = io.lsuIn.valid // 这就是你想要的那个“包裹信号”
+  val exu_fire = io.exuIn.valid
+
+  io.inst_over  := lsu_fire || exu_fire
+  io.debug_pc   := Mux(lsu_fire, io.lsuIn.bits.pc, io.exuIn.bits.pc)
+  io.debug_dnpc := Mux(lsu_fire, io.lsuIn.bits.dnpc, io.exuIn.bits.dnpc)
+  io.ebreak     := exu_fire && io.exuIn.bits.is_csr && io.inst_over
 
   // --- [仲裁逻辑：LSU 优先] ---
   val lsu_request = io.lsuIn.valid
@@ -51,6 +71,7 @@ class RegFile extends Module {
     val rs1_data = Output(UInt(32.W))
     val rs2_addr = Input(UInt(5.W))
     val rs2_data = Output(UInt(32.W))
+    val regs     = Output(Vec(32, UInt(32.W)))
     
     val wen      = Input(Bool())
     val waddr    = Input(UInt(5.W))
@@ -58,7 +79,7 @@ class RegFile extends Module {
   })
 
   val regs = RegInit(VecInit(Seq.fill(32)(0.U(32.W))))
-
+  io.regs := regs
   // 组合逻辑读
   io.rs1_data := Mux(io.rs1_addr === 0.U, 0.U, regs(io.rs1_addr))
   io.rs2_data := Mux(io.rs2_addr === 0.U, 0.U, regs(io.rs2_addr))
