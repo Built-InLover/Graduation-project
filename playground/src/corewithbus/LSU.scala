@@ -57,7 +57,7 @@ class LSU extends Module {
   val shifted_wmask = (base_mask << offset)(3, 0)
 
   // --- [3] 外部总线请求 (Request) ---
-  io.bus.req.valid      := is_idle && io.in.valid
+  io.bus.req.valid      := is_idle && io.in.valid && !reset.asBool
   io.bus.req.bits.addr  := current_addr
   io.bus.req.bits.wen   := LSUOpType.isStore(current_func)
   io.bus.req.bits.wdata := shifted_wdata

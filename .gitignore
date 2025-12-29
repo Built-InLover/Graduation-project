@@ -13,6 +13,7 @@
 !.gitignore
 !.scalafmt.conf
 !README.md
+!build.sc
 build/
 
 # mill

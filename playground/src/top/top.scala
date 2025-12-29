@@ -11,52 +11,60 @@ class RK_DPI extends BlackBox with HasBlackBoxInline {
     val inst_over = Input(Bool())
     val pc        = Input(UInt(32.W))
     val dnpc      = Input(UInt(32.W))
-    val regs      = Input(Vec(32, UInt(32.W)))
+    val regs      = Input(UInt(1024.W))
     val ebreak    = Input(Bool()) // 对应 WBU 引出的 ebreak
   })
-
   setInline("RK_DPI.v",
     s"""
-       |// 声明外部 C++ 函数
-       |import "DPI-C" function void set_riscv_regs(input logic[31:0] regs [32]);
-       |import "DPI-C" function void set_pc(input int pc_val);
-       |import "DPI-C" function void set_dnpc(input int dnpc_val);
-       |import "DPI-C" function void check_commit(input bit over);
-       |import "DPI-C" function void trap_handler(input int pc); // 新增：处理 ebreak
-       |
-       |module RK_DPI(
-       |  input clock,
-       |  input inst_over,
-       |  input ebreak,
-       |  input [31:0] pc,
-       |  input [31:0] dnpc,
-       |  input [31:0] regs [31:0]
-       |);
-       |
-       |  always @(posedge clock) begin
-       |    if (inst_over) begin
-       |      set_pc(pc);
-       |      set_dnpc(dnpc);
-       |      set_riscv_regs(regs);
-       |      check_commit(1'b1);
-       |      
-       |      // 如果当前退休的指令是 ebreak，触发 C++ 端的结束逻辑
-       |      if (ebreak) begin
-       |        trap_handler(pc);
-       |      end
-       |    end else begin
-       |      check_commit(1'b0);
-       |    end
-       |  end
-       |
-       |endmodule
-    """.stripMargin)
+     |// 声明外部 C++ 函数
+     |import "DPI-C" function void set_riscv_regs(input logic[31:0] regs [32]);
+     |import "DPI-C" function void set_pc(input int pc_val);
+     |import "DPI-C" function void set_dnpc(input int dnpc_val);
+     |import "DPI-C" function void check_commit(input bit over);
+     |import "DPI-C" function void trap_handler(input int pc); // 处理 ebreak
+     |
+     |module RK_DPI(
+     |  input          clock,
+     |  input          inst_over,
+     |  input          ebreak,
+     |  input  [31:0]  pc,
+     |  input  [31:0]  dnpc,
+     |  input  [1023:0] regs
+     |);
+     |
+     |  // 1. 定义逻辑数组供 DPI 使用 (Unpacked Array)
+     |  logic [31:0] regs_array [31:0];
+     |
+     |  // 2. 将 1024 位打包信号切开，填充到数组中
+     |  genvar i;
+     |  generate
+     |    for (i = 0; i < 32; i = i + 1) begin : slice_regs
+     |      assign regs_array[i] = regs[i*32 +: 32];
+     |    end
+     |  endgenerate
+     |
+     |  // 3. 状态同步逻辑
+     |  always @(posedge clock) begin
+     |    if (inst_over) begin
+     |      set_pc(pc);
+     |      set_dnpc(dnpc);
+     |      set_riscv_regs(regs_array); // 关键修复：传入处理后的数组
+     |      check_commit(1'b1);
+     |
+     |      // 如果当前退休的是 ebreak，触发 C++ 结束逻辑
+     |      if (ebreak) begin
+     |        trap_handler(pc);
+     |      end
+     |    end else begin
+     |      check_commit(1'b0);
+     |    end
+     |  end
+     |
+     |endmodule
+  """.stripMargin)
 }
 class DistributedCore extends Module {
   val io = IO(new Bundle {
-    //  对接外部系统总线
-    val imem_bus = new SimpleBus // 取指总线
-    val dmem_bus = new SimpleBus // 访存总线
     //  对接仿真系统
     val debug_pc    = Output(UInt(32.W))
     val debug_dnpc    = Output(UInt(32.W))
@@ -73,6 +81,7 @@ class DistributedCore extends Module {
   val wbu = Module(new WBU)
   val rf  = Module(new RegFile)
   val dpi = Module(new RK_DPI)
+  val mem = Module(new MemSystem)
 
 // 1. 先从源头获取信号，连给顶层 io
   // 注意：wbu 后面的信号现在都属于 io 束
@@ -88,7 +97,7 @@ class DistributedCore extends Module {
   dpi.io.inst_over := io.inst_over
   dpi.io.pc        := io.debug_pc
   dpi.io.dnpc      := io.debug_dnpc
-  dpi.io.regs      := io.debug_regs
+  dpi.io.regs      := io.debug_regs.asUInt
   dpi.io.ebreak    := io.ebreak
 
   // IFU -> IDU: 加入深度为 1 的 Queue，切断组合环路，同时开启pipe，提高IPC
@@ -135,6 +144,6 @@ class DistributedCore extends Module {
   rf.io.wdata := wbu.io.rf_wdata
 
   // --- [5] 外部接口连接 ---
-  io.imem_bus <> ifu.io.bus
-  io.dmem_bus <> lsu.io.bus
+  mem.io.ifu_bus <> ifu.io.bus
+  mem.io.lsu_bus <> lsu.io.bus
 }

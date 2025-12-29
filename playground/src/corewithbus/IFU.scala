@@ -38,7 +38,7 @@ class IFU extends Module {
 
   // --- [3] 总线请求阶段 ---
   // 发起请求的条件：处于 idle，且没有待清理的垃圾数据，且当前没有跳转
-  io.bus.req.valid     := (state === s_idle) && !inflight_trash && !io.redirect.valid
+  io.bus.req.valid     := (state === s_idle) && !inflight_trash && !io.redirect.valid && !reset.asBool
   io.bus.req.bits.addr := pc
   io.bus.req.bits.wen  := false.B
   io.bus.req.bits.wdata := 0.U
