@@ -50,8 +50,8 @@ object RV32I_ALUInstr extends HasInstrType {
     SUB            -> List(InstrR, FuType.alu, ALUOpType.sub),
     SRA            -> List(InstrR, FuType.alu, ALUOpType.sra),
 
-    AUIPC          -> List(InstrU, FuType.alu, ALUOpType.add),
-    LUI            -> List(InstrU, FuType.alu, ALUOpType.add)
+    AUIPC          -> List(InstrU, FuType.alu, ALUOpType.auipc),
+    LUI            -> List(InstrU, FuType.alu, ALUOpType.lui)
   )
 }
 

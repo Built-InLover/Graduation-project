@@ -71,7 +71,9 @@ object ALUOpType {
   def sra  = "b000_1_101".U(7.W)
   def or   = "b000_0_110".U(7.W)
   def and  = "b000_0_111".U(7.W)
-  def lui  = "b000_0_011".U(7.W) // LUI 可以借用任意编码，只需 EXU 识别即可
+
+  def lui   = "b001_0_000".U(7.W) // 随便选，只要前三位不是 000-111 里的冲突项
+  def auipc = "b010_0_000".U(7.W)
 
   // 快捷工具函数
   def isSub(op: UInt): Bool = op(3)

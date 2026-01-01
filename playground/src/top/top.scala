@@ -46,9 +46,9 @@ class RK_DPI extends BlackBox with HasBlackBoxInline {
      |  // 3. 状态同步逻辑
      |  always @(posedge clock) begin
      |    if (inst_over) begin
-     |      set_pc(pc);
-     |      set_dnpc(dnpc);
-     |      set_riscv_regs(regs_array); // 关键修复：传入处理后的数组
+     |      //set_pc(pc);
+     |      //set_dnpc(dnpc);
+     |      //set_riscv_regs(regs_array); // 关键修复：传入处理后的数组
      |      check_commit(1'b1);
      |
      |      // 如果当前退休的是 ebreak，触发 C++ 结束逻辑
