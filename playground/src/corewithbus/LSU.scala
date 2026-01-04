@@ -24,6 +24,7 @@ class LSU extends Module {
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W) // 透传 rdAddr 给 WBU
       val rfWen  = Bool()    // 告诉 WBU 是否需要写寄存器 (Load需要, Store不需要)
+      val lsu_busy = Bool()
     })
 
     // 3. 外部总线接口 (SimpleBus)
@@ -105,6 +106,7 @@ class LSU extends Module {
   io.out.bits.rdata  := load_result
   io.out.bits.rdAddr := Mux(is_idle, io.in.bits.rdAddr, rdAddr_reg)
   io.out.bits.rfWen  := is_load_op // 只有 Load 指令需要 WBU 写寄存器
+  io.out.bits.lsu_busy := (state =/= s_idle) || (io.bus.req.valid) //LSU正在工作
 
   // 状态回转逻辑
   when(io.out.fire && state === s_wait_resp) {

@@ -1,5 +1,6 @@
-#include "Vtop.h"
-#include "Vtop__Dpi.h"
+#include "VDistributedCore.h"
+#include "VDistributedCore__Dpi.h"
+#include "utils.h"
 #include "verilated.h"
 #include "verilated_fst_c.h"
 #include "svdpi.h"
@@ -8,27 +9,23 @@
 #include <cpu/decode.h>
 #include <cpu/cpu.h>
 #include <memory/paddr.h>
+void init_monitor(int argc, char *argv[]);
+void sdb_mainloop(void);                  
 
 // --- 全局仿真对象 ---
-Vtop* top;
+VDistributedCore* top;
 VerilatedFstC* tfp;
 VerilatedContext* contextp;
 
-// --- 仿真状态记录 ---
-struct BusState {
-    bool pending = false;
-    uint32_t data_latch = 0;
-};
-static BusState ifu_state, lsu_state;
 static bool commit_flag = false;
-
+static int dnpc = 0x80000000;
 // ============================================================================
 // 1. DPI-C 导出函数 (由硬件 Verilog 调用)
 // ============================================================================
-
+void debug_after_one_inst();
 extern "C" {
     void set_pc(int pc_val) { cpu.pc = (uint32_t)pc_val; }
-    void set_dnpc(int dnpc_val) { cpu.dnpc = (uint32_t)dnpc_val; }
+    void set_dnpc(int dnpc_val) { dnpc = (uint32_t)dnpc_val; }
 
     void set_riscv_regs(const svLogicVecVal* regs) {
         // 注意：DPI 传输数组时，使用 aval 获取数据
@@ -78,42 +75,21 @@ extern "C" {
 // ============================================================================
 // 2. 基础仿真原子操作
 // ============================================================================
-
 void one_cycle() {
+   top->clock = 1;
+   top->eval();
+    if (tfp) {
+        tfp->dump(contextp->time());
+        contextp->timeInc(1);
+        //tfp->flush();
+    }
     top->clock = 0;
-    top->eval();
-
-    top->io_imem_bus_req_ready = 1;
-    top->io_dmem_bus_req_ready = 1;
-
-    if (top->io_imem_bus_req_valid) {
-        ifu_state.data_latch = (uint32_t)paddr_read(top->io_imem_bus_req_addr, 4);
-        ifu_state.pending = true;
+    top->eval(); 
+    if (tfp) {
+        tfp->dump(contextp->time());
+        contextp->timeInc(1);
+        tfp->flush(); 
     }
-
-    if (top->io_dmem_bus_req_valid) {
-        if (top->io_dmem_bus_req_wen) {
-            pmem_write(top->io_dmem_bus_req_addr, top->io_dmem_bus_req_wdata, top->io_dmem_bus_req_wmask);
-            lsu_state.data_latch = 0;
-        } else {
-            lsu_state.data_latch = (uint32_t)paddr_read(top->io_dmem_bus_req_addr, 4);
-        }
-        lsu_state.pending = true;
-    }
-
-    top->io_imem_bus_resp_valid = ifu_state.pending;
-    top->io_imem_bus_resp_data  = ifu_state.data_latch;
-    top->io_dmem_bus_resp_valid = lsu_state.pending;
-    top->io_dmem_bus_resp_data  = lsu_state.data_latch;
-
-    top->clock = 1;
-    top->eval();
-
-    if (top->io_imem_bus_resp_valid && top->io_imem_bus_resp_ready) ifu_state.pending = false;
-    if (top->io_dmem_bus_resp_valid && top->io_dmem_bus_resp_ready) lsu_state.pending = false;
-
-    if (tfp) tfp->dump(contextp->time());
-    contextp->timeInc(1);
 }
 
 // ============================================================================
@@ -123,33 +99,63 @@ void one_cycle() {
 void init_sim(int argc, char** argv) {
     contextp = new VerilatedContext;
     contextp->commandArgs(argc, argv);
-    top = new Vtop{contextp};
-    
+    top = new VDistributedCore{contextp};
+
     Verilated::traceEverOn(true);
     tfp = new VerilatedFstC;
     top->trace(tfp, 99);
-    tfp->open("build/npc.fst");
+    tfp->open("obj_dir/DistributedCore.fst");
 
+    // 1. 进入复位状态
     top->reset = 1;
-    for (int i = 0; i < 10; i++) one_cycle();
-    top->reset = 0;
+    top->clock = 0;
+    top->eval();
     
-    // 复位后清理总线状态，防止复位期间的杂波被误判为请求
-    ifu_state.pending = false;
-    lsu_state.pending = false;
+    printf("\n\n--- NPC Simulation Init ---\n");
+    printf("Step 1: Applying Reset...\n");
+
+    // 2. 复位循环：只翻转时钟，不调用 one_cycle()
+    // 这样做是为了避免在复位期间地址为 0 时触发 paddr_read()
+    for (int i = 0; i < 10; i++) {
+        // 下降沿
+        top->clock = 1;
+        top->eval();
+        if (tfp) tfp->dump(contextp->time());
+        contextp->timeInc(1);
+
+        // 上升沿：PC 寄存器在此刻采样复位值 0x80000000
+        top->clock = 0;
+        top->eval();
+        if (tfp) tfp->dump(contextp->time());
+        contextp->timeInc(1);
+    }
+
+    // 3. 撤销复位
+    top->reset = 0;
+    // 撤销复位后必须 eval 一次，让组合逻辑根据 reset=0 和 PC 的新值重新计算
+    top->eval(); 
+   printf("Step 2: State initialized. Starting main simulation loop...\n");
+    printf("---------------------------\n");
 }
 
 int isa_exec_once(struct Decode *s) {
     commit_flag = false;
-
+    if(npc_state.state != NPC_RUNNING)return 0;
     // 运行硬件直到有指令退休或 CPU 停止运行
     while (!commit_flag && npc_state.state == NPC_RUNNING) {
         one_cycle();
+        if(top->io_inst_over)commit_flag = true;
     }
-
+    if(commit_flag)commit_flag = false;
+    debug_after_one_inst();
     s->pc = cpu.pc;
-    s->dnpc = cpu.dnpc;
+    s->dnpc = dnpc;
+    s->snpc = cpu.pc + 4;
     s->isa.inst = paddr_read(s->pc, 4); 
+    if(s->isa.inst == 0x00100073){
+        npc_state.state = NPC_END;
+    }
+    printf("inst=%08x,pc=%08x\n",s->isa.inst,s->pc);
     return 0;
 }
 
@@ -159,10 +165,43 @@ int main(int argc, char** argv) {
 
     sdb_mainloop(); // 框架会反复调用 isa_exec_once
 
-    // 结束后多跑几拍波形，方便观察 ebreak 后的余波
-    for(int i=0; i<5; i++) one_cycle();
-
     if (tfp) tfp->close();
-    printf("Simulation finished.\n");
+    printf("sim finished\n");
     return 0;
+}
+void debug_after_one_inst(){
+    cpu.pc = top->io_debug_pc;
+    dnpc = top->io_debug_dnpc;
+    cpu.gpr[0]  = top->io_debug_regs_0;
+    cpu.gpr[1]  = top->io_debug_regs_1;
+    cpu.gpr[2]  = top->io_debug_regs_2;
+    cpu.gpr[3]  = top->io_debug_regs_3;
+    cpu.gpr[4]  = top->io_debug_regs_4;
+    cpu.gpr[5]  = top->io_debug_regs_5;
+    cpu.gpr[6]  = top->io_debug_regs_6;
+    cpu.gpr[7]  = top->io_debug_regs_7;
+    cpu.gpr[8]  = top->io_debug_regs_8;
+    cpu.gpr[9]  = top->io_debug_regs_9;
+    cpu.gpr[10] = top->io_debug_regs_10;
+    cpu.gpr[11] = top->io_debug_regs_11;
+    cpu.gpr[12] = top->io_debug_regs_12;
+    cpu.gpr[13] = top->io_debug_regs_13;
+    cpu.gpr[14] = top->io_debug_regs_14;
+    cpu.gpr[15] = top->io_debug_regs_15;
+    cpu.gpr[16] = top->io_debug_regs_16;
+    cpu.gpr[17] = top->io_debug_regs_17;
+    cpu.gpr[18] = top->io_debug_regs_18;
+    cpu.gpr[19] = top->io_debug_regs_19;
+    cpu.gpr[20] = top->io_debug_regs_20;
+    cpu.gpr[21] = top->io_debug_regs_21;
+    cpu.gpr[22] = top->io_debug_regs_22;
+    cpu.gpr[23] = top->io_debug_regs_23;
+    cpu.gpr[24] = top->io_debug_regs_24;
+    cpu.gpr[25] = top->io_debug_regs_25;
+    cpu.gpr[26] = top->io_debug_regs_26;
+    cpu.gpr[27] = top->io_debug_regs_27;
+    cpu.gpr[28] = top->io_debug_regs_28;
+    cpu.gpr[29] = top->io_debug_regs_29;
+    cpu.gpr[30] = top->io_debug_regs_30;
+    cpu.gpr[31] = top->io_debug_regs_31;
 }

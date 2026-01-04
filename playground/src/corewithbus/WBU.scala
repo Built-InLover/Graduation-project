@@ -22,6 +22,7 @@ class WBU extends Module {
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
+      val lsu_busy = Bool()
     }))
 
     // 3. 对接 RegFile 的写端口
@@ -35,34 +36,63 @@ class WBU extends Module {
     val inst_over  = Output(Bool())
     val ebreak     = Output(Bool())
   })
+// 1. 定义锁存寄存器
+  val debug_pc_reg   = RegInit(0.U(32.W))
+  val debug_dnpc_reg = RegInit(0.U(32.W))
+  val ebreak_reg     = RegInit(false.B)
+  val inst_over_reg     = RegInit(false.B)
 
+  io.debug_pc   := debug_pc_reg
+  io.debug_dnpc := debug_dnpc_reg
+  io.ebreak     := ebreak_reg
+  io.inst_over  := inst_over_reg
 
-  val lsu_fire = io.lsuIn.valid // 这就是你想要的那个“包裹信号”
-  val exu_fire = io.exuIn.valid
+// --- [1. 确定谁有资格在这一拍“退休” (Commit)] ---
+  
+  // LSU 优先级最高：只要 lsuIn.valid 亮了，这一拍就是给 LSU 的
+  val lsu_commit = io.lsuIn.valid
+  
+  // EXU 提交的先决条件：
+  // 1. EXU 本身有指令 (exuIn.valid)
+  // 2. LSU 当前没有正在处理的指令 (lsu_busy 为假)
+  // 3. LSU 这一拍也没有刚好完成 (lsu_commit 为假) —— 避免同一拍出两条指令
+  val exu_fire = !io.lsuIn.bits.lsu_busy && !lsu_commit
+  val exu_commit = io.exuIn.valid && exu_fire
 
-  io.inst_over  := lsu_fire || exu_fire
-  io.debug_pc   := Mux(lsu_fire, io.lsuIn.bits.pc, io.exuIn.bits.pc)
-  io.debug_dnpc := Mux(lsu_fire, io.lsuIn.bits.dnpc, io.exuIn.bits.dnpc)
-  io.ebreak     := exu_fire && io.exuIn.bits.is_csr && io.inst_over
+  // --- [2. 驱动 Ready 信号 (反向压力)] ---
+  
+  io.lsuIn.ready := true.B // LSU 只要数据回来，WBU 必须接着
+  // 只有当 LSU 彻底空闲时，才允许 EXU 的数据进入 WBU
+  io.exuIn.ready := exu_fire 
 
-  // --- [仲裁逻辑：LSU 优先] ---
-  val lsu_request = io.lsuIn.valid
-  val exu_request = io.exuIn.valid && !lsu_request
+  // --- [3. 驱动调试接口 (Difftest)] ---
+  
+  // 只有真正被允许 commit 的时候才拉高 inst_over
+  val inst_commit  = lsu_commit || exu_commit
 
-  // 设置 Ready 信号 (背压)
-  io.lsuIn.ready := true.B           // WBU 总是能处理 LSU (因为 LSU 结果是异步返回的)
-  io.exuIn.ready := !lsu_request     // 如果 LSU 占用了写端口，EXU 必须等待
+    // 3. 核心：只有在 commit 发生时，才更新调试 PC 寄存器
+  when(inst_commit) {
+    debug_pc_reg   := Mux(lsu_commit, io.lsuIn.bits.pc,   io.exuIn.bits.pc)
+    debug_dnpc_reg := Mux(lsu_commit, io.lsuIn.bits.dnpc, io.exuIn.bits.dnpc)
+    // ebreak 也要锁存，确保和这一条指令的 PC 同步出现
+    ebreak_reg     := exu_commit && io.exuIn.bits.is_csr && (io.exuIn.bits.data === 0x1.U)
+  }.otherwise {
+    ebreak_reg := false.B
+  }
+  inst_over_reg := inst_commit
 
-  // 选中的源
-  val selected_rdAddr = Mux(lsu_request, io.lsuIn.bits.rdAddr, io.exuIn.bits.rdAddr)
-  val selected_data   = Mux(lsu_request, io.lsuIn.bits.rdata,   io.exuIn.bits.data)
-  val selected_rfWen  = Mux(lsu_request, io.lsuIn.bits.rfWen,  io.exuIn.bits.rfWen)
+  // --- [4. 驱动 RegFile 写回] ---
+  
+  // 选中的数据源
+  // 这里可以保持组合逻辑，因为 RegFile 内部本身是在时钟上升沿根据 io.rf_wen 写的
+  val final_rf_wen   = Mux(lsu_commit, io.lsuIn.bits.rfWen,  io.exuIn.bits.rfWen)
+  val final_rf_waddr = Mux(lsu_commit, io.lsuIn.bits.rdAddr, io.exuIn.bits.rdAddr)
+  val final_rf_wdata = Mux(lsu_commit, io.lsuIn.bits.rdata,  io.exuIn.bits.data)
 
-  // --- [驱动 RegFile] ---
-  // 最终写使能 = (有人请求) AND (指令本身需要写) AND (不是 x0)
-  io.rf_wen   := (lsu_request || exu_request) && selected_rfWen && (selected_rdAddr =/= 0.U)
-  io.rf_waddr := selected_rdAddr
-  io.rf_wdata := selected_data
+  // 最终写使能：必须是有人成功 commit，且该指令需要写回，且不是 x0
+  io.rf_wen   := inst_commit && final_rf_wen && (final_rf_waddr =/= 0.U)
+  io.rf_waddr := final_rf_waddr
+  io.rf_wdata := final_rf_wdata
 }
 // --- 顺便把 RegFile 也定义了 ---
 class RegFile extends Module {

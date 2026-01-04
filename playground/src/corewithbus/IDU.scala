@@ -48,20 +48,28 @@ class IDU extends Module with HasInstrType {
   val fuOp      = decodeRes(2)
 
   // --- [2] 立即数提取 (由 instrType 驱动) ---
-  val i_imm = inst(31, 20).asSInt
-  val s_imm = Cat(inst(31, 25), inst(11, 7)).asSInt
-  val b_imm = Cat(inst(31), inst(7), inst(30, 25), inst(11, 8), 0.U(1.W)).asSInt
-  val u_imm = Cat(inst(31, 12), 0.U(12.W)).asSInt
-  val j_imm = Cat(inst(31), inst(19, 12), inst(20), inst(30, 21), 0.U(1.W)).asSInt
+  //提取符号位
+val sign_bit = inst(31)
 
-  val final_imm = MuxLookup(instrType, 0.U)(Seq(
-    InstrI -> i_imm.asUInt,
-    InstrS -> s_imm.asUInt,
-    InstrB -> b_imm.asUInt,
-    InstrU -> u_imm.asUInt,
-    InstrJ -> j_imm.asUInt
-    // R-Type 无需立即数，缺省为 0
-  ))
+val i_imm_raw = inst(31, 20)
+val s_imm_raw = Cat(inst(31, 25), inst(11, 7))
+val b_imm_raw = Cat(inst(31), inst(7), inst(30, 25), inst(11, 8))
+val u_imm_raw = inst(31, 12)
+val j_imm_raw = Cat(inst(31), inst(19, 12), inst(20), inst(30, 21))
+
+// 扩充至 32 位
+val final_imm = MuxLookup(instrType, 0.U)(Seq(
+  // I型：12位 -> 32位 (符号扩展)
+  InstrI -> Cat(Fill(20, sign_bit), i_imm_raw),
+  // S型：12位 -> 32位 (符号扩展)
+  InstrS -> Cat(Fill(20, sign_bit), s_imm_raw),
+  // B型：12位原始段 + 末尾补0 = 13位 -> 32位 (符号扩展19位)
+  InstrB -> Cat(Fill(19, sign_bit), b_imm_raw, 0.U(1.W)),
+  // U型：20位原始段 + 末尾补12个0 = 32位 (无需符号扩展)
+  InstrU -> Cat(u_imm_raw, 0.U(12.W)),
+  // J型：20位原始段 + 末尾补0 = 21位 -> 32位 (符号扩展11位)
+  InstrJ -> Cat(Fill(11, sign_bit), j_imm_raw, 0.U(1.W))
+))
 
   // --- [3] 操作数准备 ---
   io.rf_rs1_addr := inst(19, 15)

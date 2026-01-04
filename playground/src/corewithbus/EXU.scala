@@ -61,25 +61,29 @@ class EXU extends Module with HasInstrType {
   val isMemOp  = io.in.bits.fuType === FuType.lsu
 
   
-  // --- [修正点 2] 移位量处理 ---
+  // --- 移位量处理 ---
   // 移位指令如果是 SLLI/SRLI/SRAI，移位量在立即数里；如果是 SLL/SRL/SRA，在 src2 里
   val src1     = io.in.bits.src1
   val aluIn2 = Mux(io.in.bits.useImm, io.in.bits.imm, io.in.bits.src2)
   val shamt    = aluIn2(4, 0) 
   val aluOp    = io.in.bits.fuOp
   
-  // --- [修正点 3] 强化加减法逻辑 ---
-  val aluResult = MuxLookup(aluOp(2, 0), 0.U)(Seq(
-    // 关键：如果是访存指令，强制执行 src1 + imm，忽略 Sub 标志，因为其不存在func5
-    0.U -> Mux(ALUOpType.isSub(aluOp) && !isMemOp, src1 - aluIn2, src1 + aluIn2), 
-    1.U -> (src1 << shamt),
-    2.U -> (src1.asSInt < aluIn2.asSInt).asUInt,
-    3.U -> (src1 < aluIn2).asUInt,
-    4.U -> (src1 ^ aluIn2),
-    5.U -> Mux(ALUOpType.isSra(aluOp), (src1.asSInt >> shamt).asUInt, src1 >> shamt),
-    6.U -> (src1 | aluIn2),
-    7.U -> (src1 & aluIn2)
-  ))
+  // --- 强化加减法逻辑 ---
+  val aluResult = Mux(isMemOp, 
+    // 1. 如果是访存，永远执行加法计算地址
+    src1 + aluIn2, 
+    // 2. 否则，根据 funct3 执行标准运算
+    MuxLookup(aluOp(2, 0), 0.U)(Seq(
+      0.U -> Mux(ALUOpType.isSub(aluOp), src1 - aluIn2, src1 + aluIn2), 
+      1.U -> (src1 << shamt),
+      2.U -> (src1.asSInt < aluIn2.asSInt).asUInt,
+      3.U -> (src1 < aluIn2).asUInt,
+      4.U -> (src1 ^ aluIn2),
+      5.U -> Mux(ALUOpType.isSra(aluOp), (src1.asSInt >> shamt).asUInt, src1 >> shamt),
+      6.U -> (src1 | aluIn2),
+      7.U -> (src1 & aluIn2)
+    ))
+  )
 
   // --- [2] BRU 核心逻辑 ---
   // 分支比较始终使用原始寄存器值 (src1 vs src2)
