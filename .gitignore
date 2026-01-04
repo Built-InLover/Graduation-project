@@ -13,6 +13,7 @@
 !.gitignore
 !.scalafmt.conf
 !README.md
+!picturecode.md
 !build.sc
 build/
 
