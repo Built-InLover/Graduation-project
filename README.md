@@ -25,3 +25,6 @@ EXU里面集成ALU BRU，同时没有专门对ALU和BRU进行配置，使用默�
 inst_over与debug_pc一一相对，在inst_over为1的情况下，debug_pc相对的就是当前结束的指令
 
 目前遇到LOAD-USE冒险，导致程序无法继续执行
+
+------new------
+添加picture.md
