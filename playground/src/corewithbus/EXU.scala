@@ -101,15 +101,17 @@ class EXU extends Module with HasInstrType {
   // 跳转目标计算
   val basePC   = Mux(aluOp === BRUOpType.jalr, src1, io.in.bits.pc)
   val targetPC = (basePC + io.in.bits.imm) & (~1.U(32.W))
-
   // 仿真与写回逻辑
   val dnpc = Mux(branchTake, targetPC, io.in.bits.pc + 4.U)
   io.lsuOut.bits.dnpc := dnpc
   io.wbuOut.bits.dnpc := dnpc
   io.wbuOut.bits.is_csr := io.in.bits.fuType === FuType.csr
 
-  io.redirect.valid         := io.in.valid && branchTake
+  val wbu_fire = io.wbuOut.fire 
+  // 只有握手成功那一拍，才允许发出跳转信号，跳转信号一定不是访存指令，所以走wbu退休
+  io.redirect.valid     := wbu_fire && branchTake
   io.redirect.bits.targetPC := targetPC
+
 
   // --- [3] 结果分发 (Dispatch) ---
   // LSU
@@ -121,12 +123,19 @@ class EXU extends Module with HasInstrType {
 
   // WBU
   val wbData = Mux(io.in.bits.isJump, io.in.bits.pc + 4.U, aluResult)
-  io.wbuOut.valid       := io.in.valid && !isMemOp && !io.in.bits.isBranch
+  io.wbuOut.valid         := io.in.valid && !isMemOp
   io.wbuOut.bits.data    := wbData
   io.wbuOut.bits.rdAddr  := io.in.bits.rdAddr
-  io.wbuOut.bits.rfWen   := io.in.bits.rfWen
+  io.wbuOut.bits.rfWen   := Mux(io.in.bits.isBranch, false.B, io.in.bits.rfWen)
 
   // --- [4] 输入握手 ---
+  // --- [输入握手逻辑微调] ---
   val downstreamReady = Mux(isMemOp, io.lsuOut.ready, io.wbuOut.ready)
-  io.in.ready := downstreamReady || io.redirect.valid
+  
+  // 之前的写法：
+  // io.in.ready := downstreamReady || io.redirect.valid
+  // 现在的写法：
+  // 因为 redirect 绑定了 fire (即依赖 downstreamReady)，所以这里逻辑其实没变，
+  // 只是含义变成了：如果下游肯收，我就 Ready；收了之后顺便把 Redirect 发出去。
+  io.in.ready := downstreamReady
 }
