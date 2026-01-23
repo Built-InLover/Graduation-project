@@ -11,7 +11,7 @@ import mill.scalalib._
 import mill.bsp._
 
 object playground extends ScalaModule with ScalafmtModule { m =>
-  override def scalaVersion = "2.13.10"
+  override def scalaVersion = "2.13.14"
 
   override def scalacOptions = Seq(
     "-language:reflectiveCalls",

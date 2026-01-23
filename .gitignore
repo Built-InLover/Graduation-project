@@ -20,6 +20,7 @@ build/
 # mill
 !*.mill
 !.mill-version
+!mill.bat
 out/
 .bsp/
 .metals/
