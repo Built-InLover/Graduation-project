@@ -12,6 +12,7 @@ class DistributedCore extends Module {
     val debug_pc    = Output(UInt(32.W))
     val debug_dnpc  = Output(UInt(32.W))
     val debug_regs  = Output(Vec(32, UInt(32.W)))
+    val mtrace_pc   = Output(UInt(32.W))
     val inst_over   = Output(Bool())
     val ebreak      = Output(Bool())
   })
@@ -36,6 +37,7 @@ class DistributedCore extends Module {
   io.debug_dnpc := wbu.io.debug_dnpc   
   io.inst_over  := wbu.io.inst_over
   io.ebreak     := wbu.io.ebreak
+  io.mtrace_pc  := lsu.io.pc_mtrace
 
   // [关键] 寄存器堆旁路逻辑 (Debug Bypass Network)
   // 解决 Difftest 时序错位问题：在指令 Commit 当拍直接输出 WBU 写入的新值
@@ -127,12 +129,13 @@ class DistributedCore extends Module {
   // ==================================================================
 
   // --- [Forwarding] 收集数据源 ---
-  // 优先级从高到低：EXU -> LSU_Q -> LSU -> WBU_Q -> WBU -> RegFile
   val forward_sources = Seq(
     // (有效位, rd编号, 数据内容)
     (exu.io.wbuOut.valid && exu.io.wbuOut.bits.rfWen, exu.io.wbuOut.bits.rdAddr, exu.io.wbuOut.bits.data),       // EXU 刚算出的
     (exu_wbu_q.io.deq.valid && exu_wbu_q.io.deq.bits.rfWen, exu_wbu_q.io.deq.bits.rdAddr, exu_wbu_q.io.deq.bits.data), // 待写回的 EXU 结果
     (lsu_wbu_q.io.deq.valid && lsu_wbu_q.io.deq.bits.rfWen, lsu_wbu_q.io.deq.bits.rdAddr, lsu_wbu_q.io.deq.bits.rdata) // 待写回的 LSU 结果
+    //因为目前的core，exu永远比LSU快，所以如果同时生效，说明LSU肯定是先进流水线但是后完成的，导致EXU被阻塞在这里了，所以LSU更晚，EXU更新
+    //倘若后面加入乘除导致EXU不一定比LSU慢的话，那完美的做法是给每个指令发一个 ID，Forwarding 时比较 ID 大小，谁 ID 大谁是新的。
   )
 
   // 连线到 IDU

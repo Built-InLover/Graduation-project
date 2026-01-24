@@ -19,6 +19,34 @@ VerilatedContext* contextp;
 
 static bool commit_flag = false;
 static int dnpc = 0x80000000;
+
+// --- 全局日志文件指针 ---
+static FILE *log_fp = NULL; 
+
+// --- 辅助函数1：记录内存访问 (由 DPI 调用) ---
+void trace_mem(int type, uint32_t addr, uint32_t data, char mask) {
+    if (log_fp == NULL) return;
+
+    // 格式化输出：包含 PC, Inst, 以及原本的 Address, Data
+    fprintf(log_fp, "\t[%s] Addr:0x%08x Data:0x%08x Mask:%d\n",
+        type == 0 ? "READ" : "WRITE",
+        addr,             // 读/写的地址
+        data,             // 读/写的数据
+        (int)mask
+    );
+    // fflush(log_fp); 
+}
+
+// --- 辅助函数2：记录指令提交 (由 isa_exec_once 调用) ---
+void trace_inst(uint32_t pc, uint32_t inst) {
+    if (log_fp == NULL) return;
+
+    fprintf(log_fp, "[INST] Time:%-6ld PC:0x%08x Inst:0x%08x\n",
+        contextp->time(), pc, inst
+    );
+    //fflush(log_fp); // 每次指令提交都刷新一次
+}
+
 // ============================================================================
 // 1. DPI-C 导出函数 (由硬件 Verilog 调用)
 // ============================================================================
@@ -54,19 +82,27 @@ extern "C" {
     }
 
     // 存储器接口
-    int pmem_read(int addr) { return (int)paddr_read((uint32_t)addr & ~0x3u, 4); }
+    int pmem_read(int addr) { 
+        int data = (int)paddr_read((uint32_t)addr & ~0x3u, 4);
+        trace_mem(0, (uint32_t)addr, (uint32_t)data, 0);
+        return data;
+    }
     
     void pmem_write(int addr, int data, char mask) {
-        uint32_t u_addr = (uint32_t)addr;
+        trace_mem(1, (uint32_t)addr, (uint32_t)data, mask);
+        uint32_t aligned_addr = (uint32_t)addr & ~0x3u; 
         uint32_t u_data = (uint32_t)data;
         switch (mask & 0xF) {
-            case 0b0001: paddr_write(u_addr + 0, 1, u_data & 0xFF);         break; 
-            case 0b0010: paddr_write(u_addr + 1, 1, (u_data >> 8) & 0xFF);  break; 
-            case 0b0100: paddr_write(u_addr + 2, 1, (u_data >> 16) & 0xFF); break; 
-            case 0b1000: paddr_write(u_addr + 3, 1, (u_data >> 24) & 0xFF); break; 
-            case 0b0011: paddr_write(u_addr + 0, 2, u_data & 0xFFFF);       break; 
-            case 0b1100: paddr_write(u_addr + 2, 2, (u_data >> 16) & 0xFFFF);break; 
-            case 0b1111: paddr_write(u_addr + 0, 4, u_data);                break; 
+            // 单字节写
+            case 0b0001: paddr_write(aligned_addr + 0, 1, u_data & 0xFF);         break; 
+            case 0b0010: paddr_write(aligned_addr + 1, 1, (u_data >> 8) & 0xFF);  break;
+            case 0b0100: paddr_write(aligned_addr + 2, 1, (u_data >> 16) & 0xFF); break; 
+            case 0b1000: paddr_write(aligned_addr + 3, 1, (u_data >> 24) & 0xFF); break; 
+            // 半字写
+            case 0b0011: paddr_write(aligned_addr + 0, 2, u_data & 0xFFFF);       break; 
+            case 0b1100: paddr_write(aligned_addr + 2, 2, (u_data >> 16) & 0xFFFF);break; 
+            // 全字写
+            case 0b1111: paddr_write(aligned_addr + 0, 4, u_data);                break; 
             default: break;
         }
     }
@@ -106,6 +142,14 @@ void init_sim(int argc, char** argv) {
     top->trace(tfp, 99);
     tfp->open("obj_dir/DistributedCore.fst");
 
+    // 打开全能日志文件
+    log_fp = fopen("./obj_dir/simulation.log", "w");
+    if (log_fp == NULL) {
+        printf("Error: Can not open simulation.log\n");
+    } else {
+        printf("Info: Logging trace to simulation.log\n");
+    }
+
     // 1. 进入复位状态
     top->reset = 1;
     top->clock = 0;
@@ -140,22 +184,24 @@ void init_sim(int argc, char** argv) {
 
 int isa_exec_once(struct Decode *s) {
     commit_flag = false;
-    if(npc_state.state != NPC_RUNNING)return 0;
-    // 运行硬件直到有指令退休或 CPU 停止运行
+    if(npc_state.state != NPC_RUNNING) return 0;
     while (!commit_flag && npc_state.state == NPC_RUNNING) {
         one_cycle();
-        if(top->io_inst_over)commit_flag = true;
+        if(top->io_inst_over) commit_flag = true;
     }
-    if(commit_flag)commit_flag = false;
+    if(commit_flag) commit_flag = false;
+    // 从硬件同步状态到 C++ cpu 结构体
     debug_after_one_inst();
     s->pc = cpu.pc;
     s->dnpc = dnpc;
     s->snpc = cpu.pc + 4;
     s->isa.inst = paddr_read(s->pc, 4); 
-    if(s->isa.inst == 0x00100073){
+    // 写入日志 ---
+    trace_inst(s->pc, s->isa.inst);
+    //printf("inst=%08x, pc=%08x\n", s->isa.inst, s->pc);
+    if(s->isa.inst == 0x00100073){ // EBREAK
         npc_state.state = NPC_END;
     }
-    printf("inst=%08x,pc=%08x\n",s->isa.inst,s->pc);
     return 0;
 }
 
@@ -164,6 +210,12 @@ int main(int argc, char** argv) {
     init_monitor(argc, argv);
 
     sdb_mainloop(); // 框架会反复调用 isa_exec_once
+
+    // --- 关闭日志 ---
+    if (log_fp) {
+        fclose(log_fp);
+        log_fp = NULL;
+    }
 
     if (tfp) tfp->close();
     printf("sim finished\n");
