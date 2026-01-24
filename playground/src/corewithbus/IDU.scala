@@ -27,13 +27,11 @@ class IDU extends Module with HasInstrType {
       val isBranch = Bool()
       val isJump = Bool()
       val useImm = Bool()
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     })
     // 3. 数据冒险处理接口
-    val forward_in = Input(Vec(3, new ForwardingBus)) // 旁路信号输入
-    val ex_is_load = Input(Bool()) // 上一条指令(EXU阶段)是否为Load
-    val ex_rd_addr = Input(UInt(5.W)) // 上一条指令(EXU阶段)的目标寄存器
-    val lsu_is_load = Input(Bool()) // 上一条指令(LSU阶段)是否为Load
-    val lsu_rd_addr = Input(UInt(5.W)) // 上一条指令(LSU阶段)的目标寄存器
+    val forward_in = Input(Vec(6, new ForwardingBus))  // 旁路信号输入
+
     val flush = Input(Bool()) // 流水线冲刷
     // 4. Register File 读接口
     val rf_rs1_addr = Output(UInt(5.W))
@@ -73,92 +71,74 @@ class IDU extends Module with HasInstrType {
   io.rf_rs1_addr := inst(19, 15)
   io.rf_rs2_addr := inst(24, 20)
   val rd_addr = inst(11, 7)
-// -----------------------------------------------------------------
-  //            2 [Load-Use 冒险检测逻辑 - 终极版]
-  // -----------------------------------------------------------------
-  // 1. 确定当前 IDU 指令（消费者）到底需要读哪些寄存器？
-  //    这步必须非常精确，不能漏掉 Store 的 rs2 (数据) 和 Load 的 rs1 (地址)
+// ==================================================================
+  //                1. ID 生成 (Uop ID Generation)
+  // ==================================================================
+  // 简单的 4位 计数器，溢出自动回绕，符合环形距离计算要求
+  val uop_counter = RegInit(0.U(4.W))
+  when(io.out.fire) {
+    uop_counter := uop_counter + 1.U
+  }
+
+  // ==================================================================
+  //                2. 智能旁路与暂停 (Forwarding & Stall)
+  // ==================================================================
+  
+  // 调用你的新工具 ForwardingChoose
+  // 它会返回：1. 最新的数据  2. 是否需要 Stall (命中 pend 但 valid=0)
+  val (rs1_fwd_val, rs1_stall_req) = ForwardingChoose(uop_counter, io.rf_rs1_addr, io.rf_rs1_data, io.forward_in)
+  val (rs2_fwd_val, rs2_stall_req) = ForwardingChoose(uop_counter, io.rf_rs2_addr, io.rf_rs2_data, io.forward_in)
+
+  // 辅助判断：当前指令是否真的需要读这两个寄存器？
+  // 比如 LUI 虽然 rs1_addr 字段非零，但它其实不读 rs1，所以不需要 Stall
   val is_r_type = (instrType === InstrR)
   val is_i_type = (instrType === InstrI)
-  val is_s_type = (instrType === InstrS) // Store
-  val is_b_type = (instrType === InstrB) // Branch
-  val is_j_type = (instrType === InstrJ)
-  val is_u_type = (instrType === InstrU)
+  val is_s_type = (instrType === InstrS)
+  val is_b_type = (instrType === InstrB)
+  
   val idu_valid = io.in.valid && !io.flush
+  val uses_rs1  = idu_valid && (is_r_type || is_i_type || is_s_type || is_b_type)
+  val uses_rs2  = idu_valid && (is_r_type || is_s_type || is_b_type)
 
-  // rs1 使用情况：
-  // R-Type (ADD), I-Type (ADDI/LW), S-Type (SW), B-Type (BEQ) 都要读 rs1
-  // 只有 U-Type (LUI/AUIPC) 和 J-Type (JAL) 不读 rs1
-  val uses_rs1 = idu_valid && (is_r_type || is_i_type || is_s_type || is_b_type)
+  // 最终暂停信号：需要读 且ForwardingUnit说要暂停
+  val load_use_stall = (uses_rs1 && rs1_stall_req) || (uses_rs2 && rs2_stall_req)
 
-  // rs2 使用情况：
-  // R-Type (ADD), S-Type (SW - 存数据的那个寄存器!), B-Type (BEQ) 都要读 rs2
-  // I-Type (LW/ADDI) 不读 rs2
-  val uses_rs2 = idu_valid && (is_r_type || is_s_type || is_b_type)
-
-  // 2. 确定上游（生产者）是否有 Load 指令在运行？
-  //    Check 1: EXU 阶段是否是 Load
-  val ex_load_hazard = io.ex_is_load && (io.ex_rd_addr =/= 0.U)
-  //    Check 2: LSU 阶段是否是 Load (正在等内存)
-  val lsu_load_hazard = io.lsu_is_load && (io.lsu_rd_addr =/= 0.U)
-  
-  // 3. 碰撞检测 (Collision Detection)
-  // 针对 rs1 的冲突
-  val conflict_rs1 = uses_rs1 && (
-    (ex_load_hazard && io.rf_rs1_addr === io.ex_rd_addr) || // 撞上 EXU
-    (lsu_load_hazard && io.rf_rs1_addr === io.lsu_rd_addr)  // 撞上 LSU
-  )
-  // 针对 rs2 的冲突 (这里抓住了你的 SW Bug!)
-  // 对于 SW 指令，rf_rs2_addr 就是要存入内存的数据寄存器。
-  // 如果这个数据是上一条 LW 产生的，这里必须 Stall。
-  val conflict_rs2 = uses_rs2 && (
-    (ex_load_hazard && io.rf_rs2_addr === io.ex_rd_addr) || // 撞上 EXU
-    (lsu_load_hazard && io.rf_rs2_addr === io.lsu_rd_addr) // 撞上 LSU
-  )
-  
-  // 4. 最终裁决
-  val load_use_stall = conflict_rs1 || conflict_rs2
   // ==================================================================
-  //                        3. 数据准备 (Forwarding & Mux)
+  //                3. 操作数选择
   // ==================================================================
-  // --- 前向传递处理 (Forwarding Logic) ---
-  val rs1_final = ForwardingUnit(io.rf_rs1_addr, io.rf_rs1_data, io.forward_in)
-  val rs2_final = ForwardingUnit(io.rf_rs2_addr, io.rf_rs2_data, io.forward_in)
-  // --- 操作数选择 ---
-  // src1 特殊处理：AUIPC/JAL(选PC), LUI(选Zero), 其他(选修正后的rs1)
-  val src1IsPC = (instrType === InstrU && fuOp === ALUOpType.auipc) || (instrType === InstrJ)
+  val src1IsPC   = (instrType === InstrU && fuOp === ALUOpType.auipc) || (instrType === InstrJ)
   val src1IsZero = (instrType === InstrU && fuOp === ALUOpType.lui)
-  val src1_out = MuxCase(rs1_final, Seq(
+  
+  // 直接使用 Forwarding 后的数据
+  val src1_out = MuxCase(rs1_fwd_val, Seq(
       src1IsPC   -> pc,
       src1IsZero -> 0.U(32.W)
-    )
-  )
-  val src2_out = rs2_final
+  ))
+  val src2_out = rs2_fwd_val
+
   // ==================================================================
-  //                        4. 输出赋值
+  //                4. 输出赋值
   // ==================================================================
-  io.out.bits.pc := pc
-  io.out.bits.src1 := src1_out
-  io.out.bits.src2 := src2_out
-  io.out.bits.imm := final_imm
+  io.out.bits.pc     := pc
+  io.out.bits.uop_id := uop_counter // [关键] 传给下游
+  io.out.bits.src1   := src1_out
+  io.out.bits.src2   := src2_out
+  io.out.bits.imm    := final_imm
   io.out.bits.fuType := fuType
-  io.out.bits.fuOp := fuOp
+  io.out.bits.fuOp   := fuOp
   io.out.bits.rdAddr := rd_addr
-  io.out.bits.rfWen := isrfWen(instrType)
-  // 辅助控制信号
-  io.out.bits.isLoad := (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
-  io.out.bits.isStore := (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
+  io.out.bits.rfWen  := isrfWen(instrType)
+  
+  // 辅助位
+  io.out.bits.isLoad   := (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
+  io.out.bits.isStore  := (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
   io.out.bits.isBranch := (fuType === FuType.bru) && (instrType === InstrB)
-  io.out.bits.isJump := (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
-  io.out.bits.useImm := (instrType === InstrI || instrType === InstrS ||
-    instrType === InstrU || instrType === InstrJ)
+  io.out.bits.isJump   := (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
+  io.out.bits.useImm   := (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
+
   // ==================================================================
-  //                        5. 握手与流水线控制
+  //                5. 握手
   // ==================================================================
-  // 1. in.ready (反压 IFU):
-  //    只有当 EXU 准备好接收，且当前没有发生 Load-Use Stall 时，IDU 才准备好接收新指令
-  io.in.ready := io.out.ready && !load_use_stall
-  // 2. out.valid (发送给 EXU):
-  //    输入有效，且没有 Flush，且没有发生 Load-Use Stall (Stall 时发送气泡)
+  io.in.ready  := io.out.ready && !load_use_stall
   io.out.valid := io.in.valid && !io.flush && !load_use_stall
 }

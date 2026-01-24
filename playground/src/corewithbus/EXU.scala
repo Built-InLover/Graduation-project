@@ -21,6 +21,7 @@ class EXU extends Module with HasInstrType {
       val isBranch = Bool()
       val isJump   = Bool()
       val useImm   = Bool()
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     }))
     // 2. 输出 A：给 LSU
     val lsuOut = Decoupled(new Bundle {
@@ -30,6 +31,7 @@ class EXU extends Module with HasInstrType {
       val wdata  = UInt(32.W)
       val func   = FuOpType()    
       val rdAddr = UInt(5.W)
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     })
     // 3. 输出 B：给 WBU
     val wbuOut = Decoupled(new Bundle {
@@ -39,6 +41,7 @@ class EXU extends Module with HasInstrType {
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
       val is_csr = Bool()
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     })
     // 4. 重定向
     val redirect = Valid(new Bundle {
@@ -47,7 +50,10 @@ class EXU extends Module with HasInstrType {
   })
   // 基础连接
   io.lsuOut.bits.pc := io.in.bits.pc
+  io.lsuOut.bits.uop_id := io.in.bits.uop_id
   io.wbuOut.bits.pc := io.in.bits.pc
+  io.wbuOut.bits.uop_id := io.in.bits.uop_id
+
   // 选择 ALU 操作数 2 ---
   // 对于访存指令 (LSU) 和 立即数类运算 (ALU_IMM)，操作数 2 应该是立即数
   val isMemOp  = io.in.bits.fuType === FuType.lsu

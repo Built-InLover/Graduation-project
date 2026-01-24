@@ -15,6 +15,7 @@ class LSU extends Module {
       val wdata  = UInt(32.W)
       val func   = FuOpType()
       val rdAddr = UInt(5.W)  
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     }))
     // 2. 发往 WBU 的结果
     val out = Decoupled(new Bundle {
@@ -23,10 +24,12 @@ class LSU extends Module {
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()    
+      val uop_id = UInt(4.W) // [新增] 指令身份证
     })
     // 3. 冒险检测信号 (给 IDU)
-    val is_load = Output(Bool())
-    val load_rd = Output(UInt(5.W))
+    val busy_is_load = Output(Bool())
+    val busy_rd      = Output(UInt(5.W))
+    val busy_uop_id  = Output(UInt(4.W))
     // 4. 外部总线接口
     val bus = new SimpleBus
     // 5.pc for mtrace
@@ -38,6 +41,7 @@ class LSU extends Module {
   val s_idle :: s_wait_resp :: Nil = Enum(2)
   val state = RegInit(s_idle)
   // [关键修复] PC 和 DNPC 必须锁存，不能依赖 io.in 在等待期间保持不变
+  val id_reg = RegEnable(io.in.bits.uop_id, io.in.fire)
   val pc_reg     = RegEnable(io.in.bits.pc,     io.in.fire)
   val dnpc_reg   = RegEnable(io.in.bits.dnpc,   io.in.fire)
   val addr_reg   = RegEnable(io.in.bits.addr,   io.in.fire)
@@ -50,6 +54,7 @@ class LSU extends Module {
   val current_func = Mux(is_idle, io.in.bits.func, func_reg)
   val cmd_is_store = LSUOpType.isStore(current_func)
   val cmd_is_load  = !cmd_is_store
+
   io.pc_mtrace := pc_reg
   // ==================================================================
   //                        2. 发起请求 (Request Path)
@@ -122,6 +127,7 @@ class LSU extends Module {
   io.out.bits.dnpc   := dnpc_reg
   io.out.bits.rdata  := load_result
   io.out.bits.rdAddr := rdAddr_reg
+  io.out.bits.uop_id := id_reg
   // rfWen 只有在是 Load 指令时才拉高 (Store 虽然等了 resp，但不写寄存器)
   // 注意：这里要用寄存器里的 cmd_is_load 判断，因为现在是在 wait 状态
   // 之前定义的 cmd_is_load 是基于 io.in 的，这里需要一个新的定义或者复用逻辑
@@ -130,20 +136,9 @@ class LSU extends Module {
 // ==================================================================
   //                        5. 冒险检测信号 (修复版 - 穿透 Store)
   // ==================================================================
-  // 1. 门口是否堵着一条 Load？
-  val incoming_is_load = io.in.valid && !LSUOpType.isStore(io.in.bits.func)
-  // 2. 内部是否真的正在处理一条 Load？
-  // [关键] 必须同时检查 state 和 func_reg！
-  // 只有当状态是等待，且当前指令是 Load 时，才算"内部有 Load"
-  val pending_real_load = (state === s_wait_resp) && LSUOpType.isLoad(func_reg)
-  // 3. 输出给 Hazard Unit 的信号
-  // 只要门口有 Load，或者里面有 Load，就要报警
-  io.is_load := incoming_is_load || pending_real_load
-  // 4. 目标寄存器选择 (Priority Mux)
-  // 逻辑推演：
-  // Case A: 内部是 LW (pending_real_load=True) -> 必须报内部的 rd (rdAddr_reg)
-  // Case B: 内部是 SW (pending_real_load=False), 门口是 LW -> Mux 选 False 分支 -> 报门口的 rd (io.in.bits.rdAddr)
-  // Case C: 内部是 Idle, 门口是 LW -> 同 Case B -> 报门口的 rd
-  io.load_rd := Mux(pending_real_load, rdAddr_reg, io.in.bits.rdAddr)
+ io.busy_is_load := (state === s_wait_resp) && LSUOpType.isLoad(func_reg)
+  // 直接输出寄存器里的值，不要去 Mux io.in
+  io.busy_rd      := rdAddr_reg
+  io.busy_uop_id  := id_reg
 
 }

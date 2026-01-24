@@ -125,38 +125,92 @@ class DistributedCore extends Module {
   order_q.io.deq.ready := wbu.io.token_pop // WBU 每处理完一条就弹出一个
 
   // ==================================================================
-  //                        6. 数据冒险处理 (Forwarding & Load-Use)
+  //        6. [重构] 数据冒险处理 (Forwarding Sources 收集)
   // ==================================================================
+  
+  // 辅助函数：快速构建 ForwardingBus
+  def mkFwd(pend: Bool, valid: Bool, rd: UInt, data: UInt, id: UInt) = {
+    val w = Wire(new ForwardingBus)
+    w.pend   := pend
+    w.valid  := valid
+    w.rdAddr := rd
+    w.data   := data
+    w.uop_id := id
+    w
+  }
 
-  // --- [Forwarding] 收集数据源 ---
-  val forward_sources = Seq(
-    // (有效位, rd编号, 数据内容)
-    (exu.io.wbuOut.valid && exu.io.wbuOut.bits.rfWen, exu.io.wbuOut.bits.rdAddr, exu.io.wbuOut.bits.data),       // EXU 刚算出的
-    (exu_wbu_q.io.deq.valid && exu_wbu_q.io.deq.bits.rfWen, exu_wbu_q.io.deq.bits.rdAddr, exu_wbu_q.io.deq.bits.data), // 待写回的 EXU 结果
-    (lsu_wbu_q.io.deq.valid && lsu_wbu_q.io.deq.bits.rfWen, lsu_wbu_q.io.deq.bits.rdAddr, lsu_wbu_q.io.deq.bits.rdata) // 待写回的 LSU 结果
-    //因为目前的core，exu永远比LSU快，所以如果同时生效，说明LSU肯定是先进流水线但是后完成的，导致EXU被阻塞在这里了，所以LSU更晚，EXU更新
-    //倘若后面加入乘除导致EXU不一定比LSU慢的话，那完美的做法是给每个指令发一个 ID，Forwarding 时比较 ID 大小，谁 ID 大谁是新的。
+  // 收集所有可能的写回源
+  val fwd_sigs = Seq(
+    // =======================================================
+    // Group 1: 数据已就绪 (Valid Source) - 可以直接旁路
+    // =======================================================
+    
+    // 1. EXU -> WBU 端口 (ALU 计算完成，数据立即可用)
+    mkFwd(
+      pend   = exu.io.wbuOut.valid && exu.io.wbuOut.bits.rfWen,
+      valid  = true.B, 
+      rd     = exu.io.wbuOut.bits.rdAddr,
+      data   = exu.io.wbuOut.bits.data,
+      id     = exu.io.wbuOut.bits.uop_id
+    ),
+
+    // 2. EXU -> WBU 队列头
+    mkFwd(
+      pend   = exu_wbu_q.io.deq.valid && exu_wbu_q.io.deq.bits.rfWen,
+      valid  = true.B,
+      rd     = exu_wbu_q.io.deq.bits.rdAddr,
+      data   = exu_wbu_q.io.deq.bits.data,
+      id     = exu_wbu_q.io.deq.bits.uop_id
+    ),
+
+    // 3. LSU -> WBU 队列头 (Load 完成，数据已回)
+    mkFwd(
+      pend   = lsu_wbu_q.io.deq.valid && lsu_wbu_q.io.deq.bits.rfWen,
+      valid  = true.B,
+      rd     = lsu_wbu_q.io.deq.bits.rdAddr,
+      data   = lsu_wbu_q.io.deq.bits.rdata,
+      id     = lsu_wbu_q.io.deq.bits.uop_id
+    ),
+
+    // =======================================================
+    // Group 2: 占坑但无数据 (Stall Source) - 必须暂停
+    // =======================================================
+
+    // 4. EXU -> LSU 端口 (Load 刚算出地址)
+    // 状态：刚离开 EXU，还没进队列，或者正在进队列的路上
+    mkFwd(
+      // 只有 Load 指令才需要占 RF 坑位 (Store 不写 RF，忽略)
+      pend   = exu.io.lsuOut.valid && 
+               (LSUOpType.isLoad(exu.io.lsuOut.bits.func) && exu.io.lsuOut.bits.rdAddr =/= 0.U),
+      
+      valid  = false.B, // 绝对不能用！此时 wdata 是存入的数据，addr 是地址，都不是结果
+      rd     = exu.io.lsuOut.bits.rdAddr,
+      data   = 0.U,
+      id     = exu.io.lsuOut.bits.uop_id
+    ),
+
+    // 5. EXU -> LSU 队列头 (排队进 LSU)
+    mkFwd(
+      pend   = exu_lsu_q.io.deq.valid && 
+               (LSUOpType.isLoad(exu_lsu_q.io.deq.bits.func) && exu_lsu_q.io.deq.bits.rdAddr =/= 0.U),
+      valid  = false.B,
+      rd     = exu_lsu_q.io.deq.bits.rdAddr,
+      data   = 0.U,
+      id     = exu_lsu_q.io.deq.bits.uop_id
+    ),
+
+    // 6. LSU 内部 (正在等待总线)
+    mkFwd(
+      pend   = lsu.io.busy_is_load, 
+      valid  = false.B,
+      rd     = lsu.io.busy_rd,
+      data   = 0.U,
+      id     = lsu.io.busy_uop_id
+    )
   )
 
   // 连线到 IDU
-  for (i <- 0 until 3) {
-    idu.io.forward_in(i).valid  := forward_sources(i)._1
-    idu.io.forward_in(i).rdAddr := forward_sources(i)._2
-    idu.io.forward_in(i).data   := forward_sources(i)._3
-  }
-
-  // --- [Load-Use Hazard] 连线 ---
-  // 1. EXU 探测
-  val ex_inst_valid = exu.io.in.valid 
-  val ex_is_load    = exu.io.in.bits.isLoad
-  val ex_rd         = exu.io.in.bits.rdAddr
-
-  idu.io.ex_is_load := ex_inst_valid && ex_is_load
-  idu.io.ex_rd_addr := ex_rd
-
-  // 2. LSU 探测 (新增)
-  idu.io.lsu_is_load := lsu.io.is_load
-  idu.io.lsu_rd_addr := lsu.io.load_rd
+  idu.io.forward_in := VecInit(fwd_sigs)
 
   // ==================================================================
   //                        7. 资源与总线连接
