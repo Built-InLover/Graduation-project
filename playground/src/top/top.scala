@@ -89,11 +89,10 @@ class DistributedCore extends Module {
   // ==================================================================
   //                        4. 冲刷逻辑 (Flush Logic)
   // ==================================================================
-  // 当发生跳转时，IFU 和 IDU 里的旧指令（预测失败路径）必须被清除
+  // 当发生跳转时，IFU 的旧指令（预测失败路径）必须被清除
   // 注意：LSU 和 WBU 里的指令是合法的，不能被冲刷！
   
   ifu_idu_q.reset := reset.asBool || idu.io.flush
-  idu_exu_q.reset := reset.asBool || idu.io.flush
   
   // 控制流反馈
   ifu.io.redirect := exu.io.redirect
@@ -206,7 +205,26 @@ class DistributedCore extends Module {
       rd     = lsu.io.busy_rd,
       data   = 0.U,
       id     = lsu.io.busy_uop_id
-    )
+    ),
+    
+    // 7. Divider Pending
+    mkFwd(
+      pend  = exu.io.slow_op_pending(0).busy, 
+      valid = false.B,
+      rd    = exu.io.slow_op_pending(0).rd,
+      data  = 0.U,
+      id    = exu.io.slow_op_pending(0).id
+    ),
+
+    // 8. Multiplier Pending [新增]
+    mkFwd(
+      pend  = exu.io.slow_op_pending(1).busy, 
+      valid = false.B,
+      rd    = exu.io.slow_op_pending(1).rd,
+      data  = 0.U,
+      id    = exu.io.slow_op_pending(1).id
+    ),
+    
   )
 
   // 连线到 IDU

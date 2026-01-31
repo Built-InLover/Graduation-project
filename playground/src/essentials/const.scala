@@ -28,7 +28,7 @@ object FuType {
   def num = 5
   def alu = "b000".U
   def lsu = "b001".U
-  //def mdu = "b010".U
+  def mdu = "b010".U
   def csr = "b011".U
   //def mou = "b100".U
   def bru = "b101".U
@@ -40,14 +40,14 @@ object FuOpType {
 }
 
 object LSUOpType {
-  def lb   = "b0000000".U
-  def lh   = "b0000001".U
-  def lw   = "b0000010".U
-  def lbu  = "b0000100".U
-  def lhu  = "b0000101".U
-  def sb   = "b0001000".U
-  def sh   = "b0001001".U
-  def sw   = "b0001010".U
+  def lb   = "b000_0_000".U(7.W)
+  def lh   = "b000_0_001".U(7.W)
+  def lw   = "b000_0_010".U(7.W)
+  def lbu  = "b000_0_100".U(7.W)
+  def lhu  = "b000_0_101".U(7.W)
+  def sb   = "b000_1_000".U(7.W)
+  def sh   = "b000_1_001".U(7.W)
+  def sw   = "b000_1_010".U(7.W)
 
   def isStore(func: UInt): Bool = func(3)
   def isLoad(func: UInt): Bool = !isStore(func)  
@@ -92,4 +92,35 @@ object BRUOpType {
   def bge   = "b000_0_101".U(7.W) // func3: 101
   def bltu  = "b000_0_110".U(7.W) // func3: 110
   def bgeu  = "b000_0_111".U(7.W) // func3: 111
+}
+
+object MDUOpType {
+  // 编码策略:
+  // 高3位: "b011" (接在 ALUOpType 的 auipc b010... 之后，防止冲突)
+  // 第3位: "0"    (占位，对应 ALU 中的 func7 差异位)
+  // 低3位: "XXX"  (完全对应 RISC-V Spec 的 funct3)
+
+  // 乘法类 (funct3: 000 ~ 011)
+  def mul    = "b011_0_000".U(7.W)
+  def mulh   = "b011_0_001".U(7.W)
+  def mulhsu = "b011_0_010".U(7.W)
+  def mulhu  = "b011_0_011".U(7.W)
+
+  // 除法类 (funct3: 100 ~ 111)
+  def div    = "b011_0_100".U(7.W)
+  def divu   = "b011_0_101".U(7.W)
+  def rem    = "b011_0_110".U(7.W)
+  def remu   = "b011_0_111".U(7.W)
+
+  // 辅助判断函数
+  // 观察低3位 (funct3)：
+  // 0xx (0-3) 是乘法
+  // 1xx (4-7) 是除法/取余
+  // 所以只需要检查 bit(2) 即可快速区分
+  def isDiv(op: UInt): Bool = op(2) 
+  def isMul(op: UInt): Bool = !op(2)
+  
+  // 额外赠送：辅助判断是否是有符号取模/除法 (用于 Divider 内部逻辑)
+  // div(100) 和 rem(110) 的 bit(0) 都是 0
+  def isDivSign(op: UInt): Bool = !op(0) 
 }

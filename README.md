@@ -61,10 +61,14 @@ debug心得：尝试观察一条出错指令从被取出到退休的全过程，
 合并了load-use的stall和raw的数据前向传递
 跑通了RV32e的全部测试集
 
+------new--------
+把mycore从npc独立出来，创建了riscv32i riscv32im riscv32imc三个架构，不用再跑rv32e的测试了
+实现了M扩展，通过了RISCV32M测试和ysyx框架下的cpu-tests
+
 目前还要处理的是：
-1、跑RV32I的完整测试
-2、总线修改，尝试支持外设
-3、加入M和C扩展
-4、加入CSR支持，可以跑RT-thread
-5、接入多延迟内存+i/d cache
-6、加入外设、中断系统client
+M 模式 (CSR + Trap) (核心功能，必须有)
+SimpleBus -> AXI4-Lite (基础设施升级)
+随机延迟 DRAM 模型 (验证 AXI 握手的试金石)
+I-Cache / D-Cache (性能优化)
+外设与中断
+C 扩展

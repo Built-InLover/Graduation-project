@@ -32,14 +32,17 @@ class IFU extends Module {
   // 当 req 发出时入队，当 resp 回来时出队
   val meta_queue = Module(new Queue(new IfuMetaBundle, pipelineDepth, pipe = true))
   // --- 1. 请求阶段 (Request Stage) ---
-  // 处理 Redirect
-  // 注意：Redirect 优先级最高，一旦发生，立刻更新 PC 并翻转 Epoch
-  val is_redirect = io.redirect.valid
-  when(is_redirect) {
+    // 1.记录上一拍的 redirect 状态
+  val redirect_last = RegNext(io.redirect.valid, false.B)
+    // 2. 检测上升沿：现在是高，上一拍是低
+  // 只有在上升沿这一拍，才是“新的跳转请求”
+  val is_redirect_pulse = io.redirect.valid && !redirect_last
+    // 3. 使用脉冲信号控制逻辑
+  when(is_redirect_pulse) {
     pc_reg    := io.redirect.bits.targetPC
-    epoch_reg := !epoch_reg // 翻转 Epoch，作废之前发出的所有请求
+    epoch_reg := !epoch_reg 
   } .elsewhen(io.bus.req.fire) {
-    pc_reg := pc_reg + 4.U // 只有请求成功发出时，PC才自增
+    pc_reg := pc_reg + 4.U
   }
   // 总线请求逻辑
   // 只有当 Meta Queue 有空位能存下元数据时，我们才允许发请求

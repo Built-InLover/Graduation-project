@@ -1,0 +1,32 @@
+package essentials
+
+import chisel3._
+import chisel3.util._
+
+object RV32M_MDUInstr extends HasInstrType {
+  def MUL    = BitPat("b0000001_?????_?????_000_?????_0110011")
+  def MULH   = BitPat("b0000001_?????_?????_001_?????_0110011")
+  def MULHSU = BitPat("b0000001_?????_?????_010_?????_0110011")
+  def MULHU  = BitPat("b0000001_?????_?????_011_?????_0110011")
+  def DIV    = BitPat("b0000001_?????_?????_100_?????_0110011")
+  def DIVU   = BitPat("b0000001_?????_?????_101_?????_0110011")
+  def REM    = BitPat("b0000001_?????_?????_110_?????_0110011")
+  def REMU   = BitPat("b0000001_?????_?????_111_?????_0110011")
+
+  val table = Array(
+    // 格式: 指令 -> List(指令类型, 功能单元类型, 操作码类型)
+    MUL    -> List(InstrR, FuType.mdu, MDUOpType.mul),
+    MULH   -> List(InstrR, FuType.mdu, MDUOpType.mulh),
+    MULHSU -> List(InstrR, FuType.mdu, MDUOpType.mulhsu),
+    MULHU  -> List(InstrR, FuType.mdu, MDUOpType.mulhu),
+    
+    DIV    -> List(InstrR, FuType.mdu, MDUOpType.div),
+    DIVU   -> List(InstrR, FuType.mdu, MDUOpType.divu),
+    REM    -> List(InstrR, FuType.mdu, MDUOpType.rem),
+    REMU   -> List(InstrR, FuType.mdu, MDUOpType.remu)
+  )
+}
+
+object RVMInstr {
+  val table = RV32M_MDUInstr.table
+}

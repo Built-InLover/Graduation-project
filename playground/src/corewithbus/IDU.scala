@@ -30,7 +30,7 @@ class IDU extends Module with HasInstrType {
       val uop_id = UInt(4.W) // [新增] 指令身份证
     })
     // 3. 数据冒险处理接口
-    val forward_in = Input(Vec(6, new ForwardingBus))  // 旁路信号输入
+    val forward_in = Input(Vec(8, new ForwardingBus))  // 旁路信号输入
 
     val flush = Input(Bool()) // 流水线冲刷
     // 4. Register File 读接口
@@ -47,7 +47,7 @@ class IDU extends Module with HasInstrType {
   // ==================================================================
   // --- 指令译码 (Lookup Table) ---
   val defaultSignals = List(InstrN, FuType.alu, 0.U(7.W))
-  val decodeRes = ListLookup(inst, defaultSignals, RVIInstr.table ++ Privileged.table)
+  val decodeRes = ListLookup(inst, defaultSignals, RVIInstr.table ++ RVMInstr.table ++ Privileged.table)
   val instrType = decodeRes(0)
   val fuType = decodeRes(1)
   val fuOp = decodeRes(2)
