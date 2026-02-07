@@ -15,7 +15,6 @@ class WBU extends Module {
       val data   = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
-      val is_csr = Bool()
       val uop_id = UInt(4.W) // [新增] 指令身份证
     }))
     // 来自 LSU 的指令 (Load/Store)
@@ -46,7 +45,6 @@ class WBU extends Module {
     val debug_pc   = Output(UInt(32.W))
     val debug_dnpc = Output(UInt(32.W))
     val inst_over  = Output(Bool())
-    val ebreak     = Output(Bool())
   })
   // ==================================================================
   //                        逻辑实现 (Logic)
@@ -93,16 +91,12 @@ class WBU extends Module {
   io.inst_over  := inst_commit
   io.debug_pc   := 0.U
   io.debug_dnpc := 0.U
-  io.ebreak     := false.B
   // 当发生提交时，输出对应的指令信息
   when(inst_commit) {
     // 优先级选择：Token 机制保证了 lsu_fire 和 exu_fire 互斥
     // 因此这里可以用 Mux 选取正在提交的那一路数据
     io.debug_pc   := Mux(lsu_fire, io.lsuIn.bits.pc,   io.exuIn.bits.pc)
     io.debug_dnpc := Mux(lsu_fire, io.lsuIn.bits.dnpc, io.exuIn.bits.dnpc)
-    // Ebreak 处理 (通常只有 EXU 会产生 CSR/Ebreak 指令)
-    // 必须 check exu_fire 确保不是误判
-    io.ebreak     := exu_fire && io.exuIn.bits.is_csr// && (io.exuIn.bits.data === 1.U)
   }
 }
 // --- 顺便把 RegFile 也定义了 ---

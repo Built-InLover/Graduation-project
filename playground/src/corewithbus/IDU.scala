@@ -47,7 +47,7 @@ class IDU extends Module with HasInstrType {
   // ==================================================================
   // --- 指令译码 (Lookup Table) ---
   val defaultSignals = List(InstrN, FuType.alu, 0.U(7.W))
-  val decodeRes = ListLookup(inst, defaultSignals, RVIInstr.table ++ RVMInstr.table ++ Privileged.table)
+  val decodeRes = ListLookup(inst, defaultSignals, RVIInstr.table ++ RVMInstr.table ++ Privileged.table ++ RVZicsrInstr.table)
   val instrType = decodeRes(0)
   val fuType = decodeRes(1)
   val fuOp = decodeRes(2)

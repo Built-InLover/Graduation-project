@@ -65,8 +65,14 @@ debug心得：尝试观察一条出错指令从被取出到退休的全过程，
 把mycore从npc独立出来，创建了riscv32i riscv32im riscv32imc三个架构，不用再跑rv32e的测试了
 实现了M扩展，通过了RISCV32M测试和ysyx框架下的cpu-tests
 
+------new--------
+完成了M扩展的不完全测试
+成功运行了rt-thread-am
+最后无法输出msh >/ 是因为uart.c 里面的uart_getc输出完预设内容后就输出-1，导致shell.c里面的finsh_getchar读不到字节而卡住
+至于nemu和native为啥不会，而是弹出一个界面，暂时未知，没兴趣弄明白了
+至于要解决的话，一个是弄明白为啥nemu和native会弹窗口，还有一个就是shell.c里实现一个阻塞等待，而不是读不到字节直接卡死
+
 目前还要处理的是：
-M 模式 (CSR + Trap) (核心功能，必须有)
 SimpleBus -> AXI4-Lite (基础设施升级)
 随机延迟 DRAM 模型 (验证 AXI 握手的试金石)
 I-Cache / D-Cache (性能优化)

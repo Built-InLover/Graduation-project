@@ -12,9 +12,9 @@ class DistributedCore extends Module {
     val debug_pc    = Output(UInt(32.W))
     val debug_dnpc  = Output(UInt(32.W))
     val debug_regs  = Output(Vec(32, UInt(32.W)))
+    val debug_csr   = Output(Vec(4, UInt(32.W)))
     val mtrace_pc   = Output(UInt(32.W))
     val inst_over   = Output(Bool())
-    val ebreak      = Output(Bool())
   })
 
   // ==================================================================
@@ -36,8 +36,9 @@ class DistributedCore extends Module {
   io.debug_pc   := wbu.io.debug_pc
   io.debug_dnpc := wbu.io.debug_dnpc   
   io.inst_over  := wbu.io.inst_over
-  io.ebreak     := wbu.io.ebreak
   io.mtrace_pc  := lsu.io.pc_mtrace
+
+  io.debug_csr  := exu.io.debug_csr
 
   // [关键] 寄存器堆旁路逻辑 (Debug Bypass Network)
   // 解决 Difftest 时序错位问题：在指令 Commit 当拍直接输出 WBU 写入的新值
@@ -122,6 +123,8 @@ class DistributedCore extends Module {
   wbu.io.next_is_lsu   := order_q.io.deq.bits
   wbu.io.token_valid   := order_q.io.deq.valid
   order_q.io.deq.ready := wbu.io.token_pop // WBU 每处理完一条就弹出一个
+
+  exu.io.rob_empty := order_q.io.count === 1.U
 
   // ==================================================================
   //        6. [重构] 数据冒险处理 (Forwarding Sources 收集)

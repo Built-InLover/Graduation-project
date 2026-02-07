@@ -124,3 +124,29 @@ object MDUOpType {
   // div(100) 和 rem(110) 的 bit(0) 都是 0
   def isDivSign(op: UInt): Bool = !op(0) 
 }
+// ==================================================================
+// CSR常量定义
+// ==================================================================
+object CSROpType {    
+  def jmp  = "b1000000".U  
+  def wrt  = "b0000001".U  
+  def set  = "b0000011".U  
+  def clr  = "b0000111".U  
+}
+object CSRAddress {
+  val MSTATUS = 0x300.U(12.W)
+  val MEPC    = 0x341.U(12.W)
+  val MCAUSE  = 0x342.U(12.W)
+  val MTVEC   = 0x305.U(12.W)
+}
+object CauseCode {
+  val ENVCALL_U = 8.U(32.W)
+  val ENVCALL_S = 9.U(32.W)
+  val ENVCALL_M = 11.U(32.W)
+  val BREAKPOINT = 3.U(32.W)
+}
+object PrivilegeLevel {
+  val PRV_U = "b00".U(2.W)
+  val PRV_S = "b01".U(2.W)
+  val PRV_M = "b11".U(2.W)
+}
