@@ -72,8 +72,11 @@ debug心得：尝试观察一条出错指令从被取出到退休的全过程，
 至于nemu和native为啥不会，而是弹出一个界面，暂时未知，没兴趣弄明白了
 至于要解决的话，一个是弄明白为啥nemu和native会弹窗口，还有一个就是shell.c里实现一个阻塞等待，而不是读不到字节直接卡死
 
+------new--------
+解决了nemu和npc对ebreak处理不同的情况：直接在execute里判断是否是ebreak，如果是，直接不进行difftest测试，而是直接结束
+将SimpleBus升级为AXI4-Lite，但是简化了实现，Store 必须将AW和W绑定，以及默认LSU读比写优先
+
 目前还要处理的是：
-SimpleBus -> AXI4-Lite (基础设施升级)
 随机延迟 DRAM 模型 (验证 AXI 握手的试金石)
 I-Cache / D-Cache (性能优化)
 外设与中断

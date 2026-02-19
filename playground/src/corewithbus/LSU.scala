@@ -7,7 +7,6 @@ import essentials._
 
 class LSU extends Module {
   val io = IO(new Bundle {
-    // 1. 来自 EXU 的请求
     val in = Flipped(Decoupled(new Bundle {
       val pc     = UInt(32.W)
       val dnpc   = UInt(32.W)
@@ -15,130 +14,121 @@ class LSU extends Module {
       val wdata  = UInt(32.W)
       val func   = FuOpType()
       val rdAddr = UInt(5.W)  
-      val uop_id = UInt(4.W) // [新增] 指令身份证
+      val uop_id = UInt(4.W) 
     }))
-    // 2. 发往 WBU 的结果
     val out = Decoupled(new Bundle {
       val pc     = UInt(32.W)
       val dnpc   = UInt(32.W)
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()    
-      val uop_id = UInt(4.W) // [新增] 指令身份证
+      val uop_id = UInt(4.W) 
     })
-    // 3. 冒险检测信号 (给 IDU)
     val busy_is_load = Output(Bool())
     val busy_rd      = Output(UInt(5.W))
     val busy_uop_id  = Output(UInt(4.W))
-    // 4. 外部总线接口
-    val bus = new SimpleBus
-    // 5.pc for mtrace
+    val bus = new AXI4LiteInterface(AXI4LiteParams(32, 32)) // [修改]
     val pc_mtrace = Output(UInt(32.W))
   })
-  // ==================================================================
-  //                        1. 状态机与寄存器
-  // ==================================================================
+
   val s_idle :: s_wait_resp :: Nil = Enum(2)
   val state = RegInit(s_idle)
-  // [关键修复] PC 和 DNPC 必须锁存，不能依赖 io.in 在等待期间保持不变
-  val id_reg = RegEnable(io.in.bits.uop_id, io.in.fire)
+
+  val id_reg     = RegEnable(io.in.bits.uop_id, io.in.fire)
   val pc_reg     = RegEnable(io.in.bits.pc,     io.in.fire)
   val dnpc_reg   = RegEnable(io.in.bits.dnpc,   io.in.fire)
   val addr_reg   = RegEnable(io.in.bits.addr,   io.in.fire)
   val wdata_reg  = RegEnable(io.in.bits.wdata,  io.in.fire)
   val func_reg   = RegEnable(io.in.bits.func,   io.in.fire)
   val rdAddr_reg = RegEnable(io.in.bits.rdAddr, io.in.fire)
-  // [修复命名冲突] 使用 cmd_is_store/load 避免与 io.is_loading 混淆
+
   val is_idle = state === s_idle
-  // 如果是 Idle，看输入；如果是 Wait，看寄存器
   val current_func = Mux(is_idle, io.in.bits.func, func_reg)
   val cmd_is_store = LSUOpType.isStore(current_func)
   val cmd_is_load  = !cmd_is_store
 
   io.pc_mtrace := pc_reg
-  // ==================================================================
-  //                        2. 发起请求 (Request Path)
-  // ==================================================================
+
   val req_addr  = Mux(is_idle, io.in.bits.addr,  addr_reg)
   val req_wdata = Mux(is_idle, io.in.bits.wdata, wdata_reg)
   val offset    = req_addr(1, 0)
   val base_mask = LSUOpType.mask(current_func)
   val shifted_wdata = req_wdata << (offset << 3)
   val shifted_wmask = (base_mask << offset)(3, 0)
-  // --- 总线请求连线 ---
-  io.bus.req.valid      := is_idle && io.in.valid && !reset.asBool
-  io.bus.req.bits.addr  := req_addr
-  io.bus.req.bits.wen   := cmd_is_store
-  io.bus.req.bits.wdata := shifted_wdata
-  io.bus.req.bits.wmask := shifted_wmask
-  // --- 输入握手逻辑 (Back Pressure) ---
-  // 这里解答你的疑问：
-  // 只要 state 不是 s_idle，io.in.ready 就会被拉低。
-  // 这就保证了在 Load 等待期间，不会接受新的指令，不会覆盖寄存器。
-  val out_ready_for_store = io.out.ready // Store 需要 WBU 准备好接收"写完成"信号
-  val bus_ready_for_req   = io.bus.req.ready
-  // 对于 Store: Bus要能发 && 下游要能收结果
-  // 对于 Load:  Bus要能发 (下游收结果是以后数据回来之后的事)
-  val handshake_condition = Mux(cmd_is_store,
-                                bus_ready_for_req && out_ready_for_store,
-                                bus_ready_for_req)
+
+  // ==================================================================
+  //                        1. AXI 发起请求 (Request Path)
+  // ==================================================================
+  val can_req = is_idle && io.in.valid && !reset.asBool
+  
+  // AR 通道 (Load)
+  io.bus.ar.valid     := can_req && cmd_is_load
+  io.bus.ar.bits.addr := req_addr
+  io.bus.ar.bits.prot := "b000".U
+  
+  // AW / W 通道 (Store - 采用同时发送策略)
+  val is_store_req = can_req && cmd_is_store
+  io.bus.aw.valid     := is_store_req
+  io.bus.aw.bits.addr := req_addr
+  io.bus.aw.bits.prot := "b000".U
+  
+  io.bus.w.valid      := is_store_req
+  io.bus.w.bits.data  := shifted_wdata
+  io.bus.w.bits.strb  := shifted_wmask
+
+  // 握手条件
+  val ar_ready = io.bus.ar.ready
+  val aw_w_ready = io.bus.aw.ready && io.bus.w.ready // Store 必须地址和数据都 Ready 才能进 Wait  AW和W捆绑，简化设计
+  
+  val bus_ready_for_req = Mux(cmd_is_store, aw_w_ready, ar_ready)
+  val handshake_condition = Mux(cmd_is_store, bus_ready_for_req && io.out.ready, bus_ready_for_req)
+  
   io.in.ready := is_idle && handshake_condition
-  // --- 状态跳转 ---
- // [修改点 1] 状态机跳转：Store 和 Load 都进入等待状态
-  when(io.bus.req.fire) {
+
+  val ar_fire = io.bus.ar.fire
+  val aw_w_fire = is_store_req && aw_w_ready
+
+  when(ar_fire || aw_w_fire) {
     state := s_wait_resp
   }
+
   // ==================================================================
-  //                        3. 接收响应 (Response Path)
+  //                        2. AXI 接收响应 (Response Path)
   // ==================================================================
-  val raw_rdata     = io.bus.resp.bits.rdata
+  val wait_is_load = LSUOpType.isLoad(func_reg)
+  val wait_is_store = LSUOpType.isStore(func_reg)
+
+  val raw_rdata     = io.bus.r.bits.data // [修改]
   val read_offset   = addr_reg(1, 0)
   val shifted_rdata = raw_rdata >> (read_offset << 3)
   val is_signed     = LSUOpType.isSigned(func_reg)
-  val load_result = WireDefault(0.U(32.W))
+  val load_result   = WireDefault(0.U(32.W))
+  
   switch(func_reg(1, 0)) {
-    is("b00".U) { // Byte
-      val b = shifted_rdata(7, 0)
-      load_result := Mux(is_signed, b.asSInt.pad(32).asUInt, b.asUInt)
-    }
-    is("b01".U) { // Half
-      val h = shifted_rdata(15, 0)
-      load_result := Mux(is_signed, h.asSInt.pad(32).asUInt, h.asUInt)
-    }
-    is("b10".U) { // Word
-      load_result := shifted_rdata
-    }
+    is("b00".U) { load_result := Mux(is_signed, shifted_rdata(7, 0).asSInt.pad(32).asUInt, shifted_rdata(7, 0)) }
+    is("b01".U) { load_result := Mux(is_signed, shifted_rdata(15, 0).asSInt.pad(32).asUInt, shifted_rdata(15, 0)) }
+    is("b10".U) { load_result := shifted_rdata }
   }
-  // [修改点 2] 握手逻辑：现在 Store 也要等 resp，所以逻辑通用了
-  // 只有当 WBU 准备好接收结果时，我们才吃掉 Bus 的 resp
-  io.bus.resp.ready := (state === s_wait_resp) && io.out.ready
-  // 状态回转
+
+  // 读写独立响应 Ready 控制
+  io.bus.r.ready := (state === s_wait_resp) && wait_is_load && io.out.ready
+  io.bus.b.ready := (state === s_wait_resp) && wait_is_store && io.out.ready
+
+  val resp_valid = Mux(wait_is_load, io.bus.r.valid, io.bus.b.valid)
+
   when(state === s_wait_resp && io.out.fire) {
     state := s_idle
   }
-  // ==================================================================
-  //                        4. 输出到 WBU
-  // ==================================================================
-  // [修改点 3] 统一输出 Valid 逻辑
-  // 只有在等待状态，且总线回复了 Valid，才算完成
-  io.out.valid := (state === s_wait_resp) && io.bus.resp.valid
-  // PC, DNPC 保持原样 (使用寄存器锁存的值)
+
+  io.out.valid := (state === s_wait_resp) && resp_valid
   io.out.bits.pc     := pc_reg
   io.out.bits.dnpc   := dnpc_reg
   io.out.bits.rdata  := load_result
   io.out.bits.rdAddr := rdAddr_reg
   io.out.bits.uop_id := id_reg
-  // rfWen 只有在是 Load 指令时才拉高 (Store 虽然等了 resp，但不写寄存器)
-  // 注意：这里要用寄存器里的 cmd_is_load 判断，因为现在是在 wait 状态
-  // 之前定义的 cmd_is_load 是基于 io.in 的，这里需要一个新的定义或者复用逻辑
-  // 建议复用 func_reg 判断
-  io.out.bits.rfWen  := (state === s_wait_resp) && LSUOpType.isLoad(func_reg)
-// ==================================================================
-  //                        5. 冒险检测信号 (修复版 - 穿透 Store)
-  // ==================================================================
- io.busy_is_load := (state === s_wait_resp) && LSUOpType.isLoad(func_reg)
-  // 直接输出寄存器里的值，不要去 Mux io.in
+  io.out.bits.rfWen  := (state === s_wait_resp) && wait_is_load
+
+  io.busy_is_load := (state === s_wait_resp) && wait_is_load
   io.busy_rd      := rdAddr_reg
   io.busy_uop_id  := id_reg
-
 }
