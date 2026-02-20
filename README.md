@@ -76,8 +76,13 @@ debug心得：尝试观察一条出错指令从被取出到退休的全过程，
 解决了nemu和npc对ebreak处理不同的情况：直接在execute里判断是否是ebreak，如果是，直接不进行difftest测试，而是直接结束
 将SimpleBus升级为AXI4-Lite，但是简化了实现，Store 必须将AW和W绑定，以及默认LSU读比写优先
 
+------new--------
+在RAM模块里加入随机数，引入延迟，成功运行了rt-thread
+RTL原生支持了UART和TIMER，但是还是通过仿真环境实现
+
+下一步打算使用ysyxSoc提供的框架，完整实现uart等外设
+
 目前还要处理的是：
-随机延迟 DRAM 模型 (验证 AXI 握手的试金石)
-I-Cache / D-Cache (性能优化)
-外设与中断
-C 扩展
+1、外设与中断
+2、I-Cache / D-Cache (性能优化)
+3、C 扩展

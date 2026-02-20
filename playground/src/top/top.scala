@@ -3,6 +3,7 @@ package top
 import chisel3._
 import chisel3.util._
 import corewithbus._
+import core._
 import common._
 import essentials._
 
@@ -26,7 +27,7 @@ class DistributedCore extends Module {
   val lsu = Module(new LSU)
   val wbu = Module(new WBU)
   val rf  = Module(new RegFile)
-  val mem = Module(new MemSystem)
+  val soc = Module(new SoCTop)
 
   // ==================================================================
   //                        2. 调试接口连线 (Debug Interface)
@@ -247,7 +248,7 @@ class DistributedCore extends Module {
   rf.io.waddr := wbu.io.rf_waddr
   rf.io.wdata := wbu.io.rf_wdata
 
-  // Memory System
-  mem.io.ifu_bus <> ifu.io.bus
-  mem.io.lsu_bus <> lsu.io.bus
+  // SOC System
+  soc.io.ifu_bus <> ifu.io.bus 
+  soc.io.lsu_bus <> lsu.io.bus 
 }
