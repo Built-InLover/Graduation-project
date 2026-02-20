@@ -16,6 +16,10 @@ class DistributedCore extends Module {
     val debug_csr   = Output(Vec(4, UInt(32.W)))
     val mtrace_pc   = Output(UInt(32.W))
     val inst_over   = Output(Bool())
+
+    // AXI4 总线接口
+    val ifu_bus = new AXI4Interface(AXI4Params(32, 32, 4))
+    val lsu_bus = new AXI4Interface(AXI4Params(32, 32, 4))
   })
 
   // ==================================================================
@@ -27,7 +31,6 @@ class DistributedCore extends Module {
   val lsu = Module(new LSU)
   val wbu = Module(new WBU)
   val rf  = Module(new RegFile)
-  val soc = Module(new SoCTop)
 
   // ==================================================================
   //                        2. 调试接口连线 (Debug Interface)
@@ -248,7 +251,7 @@ class DistributedCore extends Module {
   rf.io.waddr := wbu.io.rf_waddr
   rf.io.wdata := wbu.io.rf_wdata
 
-  // SOC System
-  soc.io.ifu_bus <> ifu.io.bus 
-  soc.io.lsu_bus <> lsu.io.bus 
+  // 总线连接
+  io.ifu_bus <> ifu.io.bus
+  io.lsu_bus <> lsu.io.bus
 }

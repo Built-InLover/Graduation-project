@@ -27,7 +27,7 @@ class LSU extends Module {
     val busy_is_load = Output(Bool())
     val busy_rd      = Output(UInt(5.W))
     val busy_uop_id  = Output(UInt(4.W))
-    val bus = new AXI4LiteInterface(AXI4LiteParams(32, 32)) // [修改]
+    val bus = new AXI4Interface(AXI4Params(32, 32, 4))
     val pc_mtrace = Output(UInt(32.W))
   })
 
@@ -62,19 +62,26 @@ class LSU extends Module {
   val can_req = is_idle && io.in.valid && !reset.asBool
   
   // AR 通道 (Load)
-  io.bus.ar.valid     := can_req && cmd_is_load
-  io.bus.ar.bits.addr := req_addr
-  io.bus.ar.bits.prot := "b000".U
-  
+  io.bus.ar.valid      := can_req && cmd_is_load
+  io.bus.ar.bits.addr  := req_addr
+  io.bus.ar.bits.id    := 0.U
+  io.bus.ar.bits.len   := 0.U
+  io.bus.ar.bits.size  := current_func(1, 0)  // lb=0, lh=1, lw=2
+  io.bus.ar.bits.burst := 1.U  // INCR
+
   // AW / W 通道 (Store - 采用同时发送策略)
   val is_store_req = can_req && cmd_is_store
-  io.bus.aw.valid     := is_store_req
-  io.bus.aw.bits.addr := req_addr
-  io.bus.aw.bits.prot := "b000".U
-  
+  io.bus.aw.valid      := is_store_req
+  io.bus.aw.bits.addr  := req_addr
+  io.bus.aw.bits.id    := 0.U
+  io.bus.aw.bits.len   := 0.U
+  io.bus.aw.bits.size  := current_func(1, 0)  // sb=0, sh=1, sw=2
+  io.bus.aw.bits.burst := 1.U  // INCR
+
   io.bus.w.valid      := is_store_req
   io.bus.w.bits.data  := shifted_wdata
   io.bus.w.bits.strb  := shifted_wmask
+  io.bus.w.bits.last  := true.B  // 单拍传输
 
   // 握手条件
   val ar_ready = io.bus.ar.ready

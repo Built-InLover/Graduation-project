@@ -6,7 +6,7 @@ import common._
 
 class IFU extends Module {
   val io = IO(new Bundle {
-    val bus = new AXI4LiteInterface(AXI4LiteParams(32, 32)) // [修改]
+    val bus = new AXI4Interface(AXI4Params(32, 32, 4))
     val out = Decoupled(new Bundle {
       val inst = UInt(32.W)
       val pc   = UInt(32.W)
@@ -40,9 +40,12 @@ class IFU extends Module {
   //                        1. AXI 读请求连线 (AR 通道)
   // ==================================================================
   val req_valid = meta_queue.io.enq.ready && !reset.asBool
-  io.bus.ar.valid     := req_valid
-  io.bus.ar.bits.addr := pc_reg 
-  io.bus.ar.bits.prot := "b100".U // 指令访问
+  io.bus.ar.valid      := req_valid
+  io.bus.ar.bits.addr  := pc_reg
+  io.bus.ar.bits.id    := 0.U
+  io.bus.ar.bits.len   := 0.U
+  io.bus.ar.bits.size  := 2.U  // 4 bytes
+  io.bus.ar.bits.burst := 1.U  // INCR
   
   meta_queue.io.enq.valid      := io.bus.ar.fire 
   meta_queue.io.enq.bits.pc    := pc_reg
@@ -51,11 +54,11 @@ class IFU extends Module {
   // ==================================================================
   //                        2. AXI 写通道禁用 (AW, W, B)
   // ==================================================================
-  io.bus.aw.valid := false.B
-  io.bus.aw.bits  := DontCare
-  io.bus.w.valid  := false.B
-  io.bus.w.bits   := DontCare
-  io.bus.b.ready  := true.B // 永远准备好吸收垃圾响应
+  io.bus.aw.valid     := false.B
+  io.bus.aw.bits      := DontCare
+  io.bus.w.valid      := false.B
+  io.bus.w.bits       := DontCare
+  io.bus.b.ready      := true.B
 
   // ==================================================================
   //                        3. AXI 读响应连线 (R 通道)
