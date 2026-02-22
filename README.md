@@ -86,3 +86,52 @@ RTL原生支持了UART和TIMER，但是还是通过仿真环境实现
 1、外设与中断
 2、I-Cache / D-Cache (性能优化)
 3、C 扩展
+
+------new--------
+完成了NPC接入ysyxSoC的工作，彻底脱离了mycore的DPI-C虚拟仿真环境。
+
+架构变化：
+旧架构中IFU和LSU通过DPI-C直连虚拟RAM（MemBlackBox），一拍完成访存，没有真实总线。
+新架构中IFU和LSU通过AXI4总线发请求，经ysyxSoC的AXI4 Crossbar路由到真实外设（mrom/flash/sdram/uart16550/spi等）。
+
+新架构拓扑：
+```
+              ┌──────────────────────────────────┐
+              │         ysyx_23060000             │
+              │                                   │
+              │   IFU ──AXI4──┐                   │
+              │               ├── 地址路由         │
+              │   LSU ──AXI4──┘                   │
+              │         │           │             │
+              │    0x0200_xxxx    其他地址          │
+              │         │           │             │
+              │      CLINT    IFU/LSU仲裁(LSU优先) │
+              │                     │             │
+              └─────────────────────┼─────────────┘
+                                    │ AXI4 Master
+                                    ▼
+              ┌──────────────────────────────────┐
+              │          ysyxSoCFull              │
+              │   AXI4 Crossbar → 地址译码        │
+              │    ┌────┬────┬────┬────┐          │
+              │  mrom flash sdram uart spi ...    │
+              └──────────────────────────────────┘
+```
+
+具体改动：
+1、AXI4Lite升级为完整AXI4（id/len/size/burst/last），IFU和LSU原生AXI4
+2、ysyx_23060000顶层符合cpu-interface.md规范，内含DistributedCore + CLINT
+3、LSU地址路由：CLINT(0x0200_xxxx)走内部，其余走外部Master
+4、IFU和LSU共享一个AXI4 Master端口，LSU优先仲裁
+5、Slave接口全部赋0，不使用的输入悬空
+6、清理了所有旧的DPI-C虚拟外设代码（RAM.scala/SoCTop.scala/AXI4Lite相关/SimpleBus等）
+7、仿真环境迁移到sim_soc/，顶层为ysyxSoCFull，verilator编译通过
+
+当前状态：仿真可运行100万周期无崩溃，但CPU无有效输出（预期行为）
+原因：CPU复位PC还未对齐ysyxSoC地址映射，flash_read/mrom_read尚未实现
+
+下一步：
+1、实现flash_read/mrom_read，让CPU能从mrom/flash取到指令
+2、调整CPU复位PC匹配ysyxSoC启动地址（mrom 0x20000000）
+3、适配AM的NPC平台到ysyxSoC地址映射（UART 0x10000000等）
+4、恢复difftest
