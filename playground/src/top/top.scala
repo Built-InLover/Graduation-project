@@ -254,4 +254,20 @@ class DistributedCore extends Module {
   // 总线连接
   io.ifu_bus <> ifu.io.bus
   io.lsu_bus <> lsu.io.bus
+
+  // ==================================================================
+  //                        8. 调试日志 (Trace)
+  // ==================================================================
+  val sim_itrace = Module(new SimItrace)
+  sim_itrace.io.clock  := clock
+  sim_itrace.io.enable := io.inst_over
+  sim_itrace.io.pc     := io.debug_pc
+  sim_itrace.io.dnpc   := io.debug_dnpc
+
+  val sim_regtrace = Module(new SimRegtrace)
+  sim_regtrace.io.clock  := clock
+  sim_regtrace.io.enable := current_rf_wen
+  sim_regtrace.io.pc     := io.debug_pc
+  sim_regtrace.io.rd     := current_rf_waddr
+  sim_regtrace.io.wdata  := current_rf_wdata
 }

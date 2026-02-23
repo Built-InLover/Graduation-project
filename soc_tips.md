@@ -55,14 +55,17 @@ SoC 负责：
 ## ysyx_23060000 内部架构
 
 ```
-IFU ──AXI4──┐
-            ├── 地址判断
-LSU ──AXI4──┘
+IFU ──AXI4(id=0)──┐
+                   ├── 地址判断
+LSU ──AXI4(id=1)──┘
       │            │
   0x0200_xxxx    其他地址
       │            │
     CLINT     IFU/LSU仲裁 → AXI4 Master → 送给 SoC
+                          ← R通道按id路由（0→IFU, 1→LSU）
 ```
+
+IFU 内部有 inst_queue（深度4）缓冲 R 响应，r.ready 不依赖下游流水线，避免与 LSU 形成死锁。
 
 CLINT 放在 CPU 内部是因为它是 CPU 私有的定时器，不需要走外部总线。其他所有地址都通过一个 AXI4 Master 端口送出去，SoC 的 crossbar 负责分发。
 
@@ -114,3 +117,6 @@ NEMU 作为模拟器，自己统一定义了所有 ISA 的外设地址映射（�
 
 - char-test.c 不加 -O2 时 gcc 生成函数序言，sp 未初始化导致 store 到非法地址，AXI 总线挂死
 - verilator 需要 --autoflush 才能让 $write 无换行时也刷新 stdout
+- **IFU/LSU 共享 AXI4 端口死锁**：IFU 和 LSU 共享同一个 AXI4 master（同 ID=0），当 LSU 发起 load 时，IFU 的预取 R 响应可能排在前面，但 IFU 的 `r.ready` 依赖下游 `io.out.ready`，而流水线被 LSU 阻塞 → 死锁环路。解决方案：
+  1. IFU 加 `inst_queue`（Queue, 深度4）缓冲 R 通道响应，`r.ready` 只看 queue 是否满，不依赖下游
+  2. IFU 用 id=0，LSU 用 id=1，顶层根据 `r.bits.id` 路由 R 响应（替代 r_source_queue FIFO 跟踪方案）

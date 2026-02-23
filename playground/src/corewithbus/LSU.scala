@@ -64,7 +64,7 @@ class LSU extends Module {
   // AR 通道 (Load)
   io.bus.ar.valid      := can_req && cmd_is_load
   io.bus.ar.bits.addr  := req_addr
-  io.bus.ar.bits.id    := 0.U
+  io.bus.ar.bits.id    := 1.U
   io.bus.ar.bits.len   := 0.U
   io.bus.ar.bits.size  := current_func(1, 0)  // lb=0, lh=1, lw=2
   io.bus.ar.bits.burst := 1.U  // INCR
@@ -73,7 +73,7 @@ class LSU extends Module {
   val is_store_req = can_req && cmd_is_store
   io.bus.aw.valid      := is_store_req
   io.bus.aw.bits.addr  := req_addr
-  io.bus.aw.bits.id    := 0.U
+  io.bus.aw.bits.id    := 1.U
   io.bus.aw.bits.len   := 0.U
   io.bus.aw.bits.size  := current_func(1, 0)  // sb=0, sh=1, sw=2
   io.bus.aw.bits.burst := 1.U  // INCR
@@ -138,4 +138,14 @@ class LSU extends Module {
   io.busy_is_load := (state === s_wait_resp) && wait_is_load
   io.busy_rd      := rdAddr_reg
   io.busy_uop_id  := id_reg
+
+  // 访存日志
+  val sim_mtrace = Module(new core.SimMtrace)
+  sim_mtrace.io.clock    := clock
+  sim_mtrace.io.enable   := io.out.fire
+  sim_mtrace.io.pc       := pc_reg
+  sim_mtrace.io.addr     := addr_reg
+  sim_mtrace.io.data     := Mux(wait_is_store, wdata_reg, load_result)
+  sim_mtrace.io.is_write := wait_is_store
+  sim_mtrace.io.size     := func_reg(1, 0)
 }

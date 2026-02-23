@@ -11,16 +11,17 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：AM 运行时 + cpu-tests/dummy 通过
+## 当前状态：AM 运行时 + cpu-tests/dummy、fib 通过
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建，cpu-tests/dummy 在 ysyxSoC 仿真中 48 周期内正常 ebreak 退出。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 81 周期 ebreak 退出，fib（含 .data 搬运）3009 周期正常完成。
 
 ## 已完成的工作
 
 ### 1. AXI4 接口改造（全链路原生 AXI4）
 - `common/AXI4.scala` — 完整 AXI4 接口定义（id/len/size/burst/last）
 - `corewithbus/IFU.scala` — AR 通道 id=0, len=0, size=2, burst=1, 复位 PC=0x20000000（MROM）
-- `corewithbus/LSU.scala` — size 根据 func 动态设置（lb=0, lh=1, lw=2）
+  - inst_queue（Queue, 深度4）缓冲 R 通道响应，r.ready 不依赖下游流水线，防止死锁
+- `corewithbus/LSU.scala` — AR/AW 通道 id=1, size 根据 func 动态设置（lb=0, lh=1, lw=2）
 
 ### 2. CLINT（保留在 CPU 内部）
 - `core/Axi4CLINT.scala` — AXI4 接口，地址范围 0x0200_0000~0x0200_ffff
@@ -39,29 +40,19 @@ CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM �
 - 内部：DistributedCore + AXI4CLINT
 - LSU 总线路由：CLINT 地址(高16位==0x0200)走内部，其余走外部 master
 - IFU 和 LSU(非CLINT) 仲裁共享一个 AXI4 Master（LSU 优先）
+- R 通道路由：根据 r.bits.id 区分（IFU id=0, LSU id=1）
 - Slave 接口输出全部赋 0
 
 ### 5. Verilog 生成 + sed 修正
+已集成到 `sim_soc/Makefile` 的 `verilog` 目标：
 ```bash
-cd /home/lj/ysyx-workbench/Graduation-project
-mill playground.runMain top.main_ysyxsoc
-sed -i 's/_bits_//g' build/ysyx_23060000.sv
-sed -i 's/io_master_aw_valid/io_master_awvalid/g; s/io_master_aw_ready/io_master_awready/g' build/ysyx_23060000.sv
-sed -i 's/io_master_w_valid/io_master_wvalid/g; s/io_master_w_ready/io_master_wready/g' build/ysyx_23060000.sv
-sed -i 's/io_master_b_valid/io_master_bvalid/g; s/io_master_b_ready/io_master_bready/g' build/ysyx_23060000.sv
-sed -i 's/io_master_ar_valid/io_master_arvalid/g; s/io_master_ar_ready/io_master_arready/g' build/ysyx_23060000.sv
-sed -i 's/io_master_r_valid/io_master_rvalid/g; s/io_master_r_ready/io_master_rready/g' build/ysyx_23060000.sv
-sed -i 's/io_slave_aw_valid/io_slave_awvalid/g; s/io_slave_aw_ready/io_slave_awready/g' build/ysyx_23060000.sv
-sed -i 's/io_slave_w_valid/io_slave_wvalid/g; s/io_slave_w_ready/io_slave_wready/g' build/ysyx_23060000.sv
-sed -i 's/io_slave_b_valid/io_slave_bvalid/g; s/io_slave_b_ready/io_slave_bready/g' build/ysyx_23060000.sv
-sed -i 's/io_slave_ar_valid/io_slave_arvalid/g; s/io_slave_ar_ready/io_slave_arready/g' build/ysyx_23060000.sv
-sed -i 's/io_slave_r_valid/io_slave_rvalid/g; s/io_slave_r_ready/io_slave_rready/g' build/ysyx_23060000.sv
-# 清理 HasBlackBoxInline 生成的资源文件列表（verilator 不认识）
-sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$d' build/ysyx_23060000.sv
+cd sim_soc && make verilog
 ```
+自动完成：mill 生成 → 去掉 `_bits_` → 合并握手信号名（`aw_valid` → `awvalid`）→ 清理 BlackBox 资源列表
 
 ### 6. 仿真环境（sim_soc/）
 - `sim_soc/Makefile` — verilator 编译，顶层 ysyxSoCFull，含 --timescale --no-timing --trace-fst --autoflush
+  - `verilog` 目标：mill 生成 + sed 信号名修正（一条命令完成）
   - YSYXSOC_HOME = `$(abspath ../../ysyxSoC)` （注意相对路径基于 sim_soc/）
   - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
   - char-test.bin 编译目标：riscv32i 交叉编译 + objcopy，链接地址 0x20000000
@@ -93,6 +84,9 @@ sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$d' buil
 
 ## 编译与运行
 ```bash
+# 生成 Verilog（含 sed 修正）
+cd sim_soc && make verilog
+
 # 编译 AM 测试程序
 cd /home/lj/ysyx-workbench/am-kernels/tests/cpu-tests
 make ARCH=riscv32im-ysyxsoc ALL=dummy
@@ -107,7 +101,7 @@ cd sim_soc && make char-test.bin && make run
 
 ## 下一步待办
 1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
-2. 跑通更多 cpu-tests（可能需要 .data 搬运逻辑）
+2. 跑通更多 cpu-tests
 3. 恢复 difftest 功能（debug 信号需要通过层级路径访问）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）

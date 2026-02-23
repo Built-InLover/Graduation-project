@@ -113,11 +113,8 @@ class ysyx_23060000 extends Module {
     core.io.lsu_bus.b.bits  := io.master.b.bits
   }
 
-  // R 通道仲裁
-  val r_is_lsu = RegInit(false.B)
-  when(io.master.ar.fire) {
-    r_is_lsu := lsu_ext_req
-  }
+  // R 通道仲裁：根据 R 响应的 id 路由（IFU id=0, LSU id=1）
+  val r_is_lsu = io.master.r.bits.id === 1.U
 
   core.io.ifu_bus.r.valid := io.master.r.valid && !r_is_lsu
   core.io.ifu_bus.r.bits  := io.master.r.bits

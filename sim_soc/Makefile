@@ -1,4 +1,4 @@
-.PHONY: default sim clean
+.PHONY: default sim clean verilog
 
 TOPNAME = ysyxSoCFull
 YSYXSOC_HOME = $(abspath ../../ysyxSoC)
@@ -8,6 +8,19 @@ VERILATOR = verilator
 VERILATOR_CFLAGS += -MMD --build -cc \
 	-O3 --x-assign fast --x-initial fast --noassert \
 	--timescale "1ns/1ns" --no-timing --autoflush
+
+ifdef TRACE
+VERILATOR_CFLAGS += --trace-fst
+CFLAGS_EXTRA += -DTRACE_ON
+endif
+
+ifdef LOG
+CFLAGS_EXTRA += -DLOG_ON
+endif
+
+ifdef MAX_CYCLES
+CFLAGS_EXTRA += -DMAX_CYCLES=$(MAX_CYCLES)
+endif
 
 OBJ_DIR = ./obj_dir
 
@@ -31,6 +44,17 @@ CSRCS = $(abspath ./test_bench_soc.cpp)
 INC_FLAGS += -I$(YSYXSOC_HOME)/perip/uart16550/rtl
 INC_FLAGS += -I$(YSYXSOC_HOME)/perip/spi/rtl
 
+GENERATED_SV = $(NPC_BUILD)/ysyx_23060000.sv
+
+# 生成 Verilog 并修正 Chisel 信号命名 → ysyxSoC 接口格式
+verilog:
+	cd $(abspath ..) && mill playground.runMain top.main_ysyxsoc
+	@# 去掉 _bits_ 前缀，合并通道握手信号名（aw_valid → awvalid 等）
+	sed -i 's/_bits_//g' $(GENERATED_SV)
+	sed -i 's/io_master_\(aw\|w\|b\|ar\|r\)_\(valid\|ready\)/io_master_\1\2/g' $(GENERATED_SV)
+	sed -i 's/io_slave_\(aw\|w\|b\|ar\|r\)_\(valid\|ready\)/io_slave_\1\2/g' $(GENERATED_SV)
+	sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$$d' $(GENERATED_SV)
+
 default: sim
 
 char-test.bin: char-test.c mrom.ld
@@ -42,7 +66,7 @@ sim: $(VSRCS) $(CSRCS)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		--top-module $(TOPNAME) \
 		$(addprefix -I, $(YSYXSOC_HOME)/perip/uart16550/rtl $(YSYXSOC_HOME)/perip/spi/rtl) \
-		--trace-fst \
+		$(if $(CFLAGS_EXTRA),-CFLAGS "$(CFLAGS_EXTRA)") \
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
 

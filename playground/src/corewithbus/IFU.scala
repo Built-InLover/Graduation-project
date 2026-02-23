@@ -61,21 +61,27 @@ class IFU extends Module {
   io.bus.b.ready      := true.B
 
   // ==================================================================
-  //                        3. AXI 读响应连线 (R 通道)
+  //                        3. AXI 读响应 → inst_queue 缓冲
   // ==================================================================
-  val resp_valid = io.bus.r.valid // [修改]
-  val meta_valid = meta_queue.io.deq.valid
+  val inst_queue = Module(new Queue(UInt(32.W), pipelineDepth, pipe = true))
+
+  // R 通道 ready 只看 inst_queue 是否能入队，不依赖下游流水线
+  io.bus.r.ready := inst_queue.io.enq.ready
+  inst_queue.io.enq.valid := io.bus.r.valid
+  inst_queue.io.enq.bits  := io.bus.r.bits.data
+
+  // ==================================================================
+  //                        4. inst_queue + meta_queue 同步出队
+  // ==================================================================
+  val both_valid = inst_queue.io.deq.valid && meta_queue.io.deq.valid
   val is_valid_inst = meta_queue.io.deq.bits.epoch === epoch_reg
 
-  val fire_transfer = resp_valid && meta_valid
-  val output_fire   = io.out.fire
-  val drop_fire     = fire_transfer && !is_valid_inst 
+  // 有效指令：等下游接收；无效 epoch：直接丢弃
+  val deq_ready = Mux(is_valid_inst, io.out.fire, both_valid)
+  inst_queue.io.deq.ready := deq_ready
+  meta_queue.io.deq.ready := deq_ready
 
-  // 控制 R 通道和 Queue 的 Ready
-  io.bus.r.ready          := (is_valid_inst && io.out.ready) || (!is_valid_inst)
-  meta_queue.io.deq.ready := io.bus.r.ready && io.bus.r.valid
-
-  io.out.valid     := fire_transfer && is_valid_inst
-  io.out.bits.inst := io.bus.r.bits.data // [修改]
+  io.out.valid     := both_valid && is_valid_inst
+  io.out.bits.inst := inst_queue.io.deq.bits
   io.out.bits.pc   := meta_queue.io.deq.bits.pc
 }
