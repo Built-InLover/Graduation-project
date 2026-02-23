@@ -3,14 +3,26 @@
 #include "verilated_fst_c.h"
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <cassert>
+
+// MROM 缓冲区（4KB，与硬件一致）
+static uint8_t mrom_data[4096];
 
 // DPI-C 桩函数（ysyxSoC 外设需要）
 extern "C" void flash_read(int32_t addr, int32_t *data) { assert(0); }
-extern "C" void mrom_read(int32_t addr, int32_t *data) { assert(0); }
+extern "C" void mrom_read(int32_t addr, int32_t *data) {
+    uint32_t offset = (uint32_t)addr - 0x20000000;
+    if (offset + 4 <= sizeof(mrom_data)) {
+        memcpy(data, mrom_data + offset, 4);
+    } else {
+        *data = 0;
+    }
+}
 
-// UART 输出
-extern "C" void uart_putchar(unsigned char c) { putchar(c); }
+// ebreak 终止机制
+static bool ebreak_flag = false;
+extern "C" void sim_ebreak() { ebreak_flag = true; }
 
 static VysyxSoCFull *top;
 static VerilatedContext *contextp;
@@ -32,6 +44,12 @@ void one_cycle() {
 }
 
 int main(int argc, char **argv) {
+    FILE *fp = fopen("char-test.bin", "rb");
+    assert(fp && "cannot open char-test.bin");
+    size_t n = fread(mrom_data, 1, sizeof(mrom_data), fp);
+    fclose(fp);
+    printf("Loaded %zu bytes into MROM\n", n);
+
     contextp = new VerilatedContext;
     Verilated::commandArgs(argc, argv);
     contextp->commandArgs(argc, argv);
@@ -42,7 +60,6 @@ int main(int argc, char **argv) {
     top->trace(tfp, 99);
     tfp->open("obj_dir/ysyxSoCFull.fst");
 
-    // 复位
     top->reset = 1;
     top->clock = 0;
     for (int i = 0; i < 10; i++) {
@@ -52,9 +69,12 @@ int main(int argc, char **argv) {
 
     printf("--- ysyxSoC Simulation Start ---\n");
 
-    // 主循环
     for (int i = 0; i < 1000000; i++) {
         one_cycle();
+        if (ebreak_flag) {
+            printf("ebreak detected at cycle %d\n", i);
+            break;
+        }
     }
 
     printf("--- ysyxSoC Simulation End (%ld cycles) ---\n", contextp->time() / 2);

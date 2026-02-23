@@ -135,3 +135,25 @@ RTL原生支持了UART和TIMER，但是还是通过仿真环境实现
 2、调整CPU复位PC匹配ysyxSoC启动地址（mrom 0x20000000）
 3、适配AM的NPC平台到ysyxSoC地址映射（UART 0x10000000等）
 4、恢复difftest
+
+------new--------
+UART字符输出测试通过，CPU成功通过AXI4总线写入UART16550外设。
+
+验证内容：
+1、编写最简char-test.c，直接往UART THR(0x10000000)写入字符'A'，无需初始化和LSR轮询
+2、ysyxSoC的UART RTL（uart_tfifo.v）内置$write("%c", data_in)，FIFO push时直接在终端打印
+3、Makefile添加riscv32i交叉编译目标，链接地址0x20000000（MROM），objcopy生成纯二进制
+4、test_bench_soc.cpp加载char-test.bin到MROM缓冲区，CPU从MROM取指执行store到UART
+5、verilator添加--autoflush选项，解决$write无换行时stdout缓冲不刷新的问题
+6、清理了test_bench_soc.cpp中的UART串口解码器和调试日志（MROM读取日志、TX边沿日志等）
+
+踩坑记录：
+- 不加-O2编译时，gcc生成函数序言（addi sp,-16; sw s0,12(sp)），sp未初始化导致store到非法地址，AXI总线挂死
+- 解决方案：编译加-O2，编译器优化掉函数序言，直接生成lui+sb指令序列
+
+当前状态：CPU从MROM取指 → AXI4总线 → 写UART THR → 终端输出字符'A'，全链路验证通过
+
+下一步：
+1、实现flash_read，让CPU能从flash取到指令，加载真实程序
+2、修改AM的NPC平台适配ysyxSoC地址映射（UART 0x10000000等）
+3、恢复difftest功能

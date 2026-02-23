@@ -7,9 +7,14 @@ NPC_BUILD = $(abspath ../build)
 VERILATOR = verilator
 VERILATOR_CFLAGS += -MMD --build -cc \
 	-O3 --x-assign fast --x-initial fast --noassert \
-	--timescale "1ns/1ns" --no-timing
+	--timescale "1ns/1ns" --no-timing --autoflush
 
 OBJ_DIR = ./obj_dir
+
+# Cross-compile toolchain
+CROSS_COMPILE = riscv64-linux-gnu-
+CC_RV = $(CROSS_COMPILE)gcc
+OBJCOPY = $(CROSS_COMPILE)objcopy
 
 # Verilog sources
 # 1. ysyxSoCFull (顶层)
@@ -28,6 +33,10 @@ INC_FLAGS += -I$(YSYXSOC_HOME)/perip/spi/rtl
 
 default: sim
 
+char-test.bin: char-test.c mrom.ld
+	$(CC_RV) -nostdlib -nostartfiles -O2 -T mrom.ld -march=rv32i -mabi=ilp32 -o char-test.elf $<
+	$(OBJCOPY) -O binary char-test.elf $@
+
 sim: $(VSRCS) $(CSRCS)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
@@ -37,8 +46,8 @@ sim: $(VSRCS) $(CSRCS)
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
 
-run: sim
+run: sim char-test.bin
 	$(OBJ_DIR)/$(TOPNAME)
 
 clean:
-	rm -rf $(OBJ_DIR)
+	rm -rf $(OBJ_DIR) char-test.elf char-test.bin

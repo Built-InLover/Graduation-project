@@ -1,0 +1,95 @@
+# NPC 接入 ysyxSoC 改造进度
+
+## 项目概述
+将自研 RISC-V 5 级流水线处理器（DistributedCore）接入 ysyxSoC，替换原有的虚拟 SRAM/UART，使用 ysyxSoC 提供的真实外设。
+
+## 目录结构
+- `playground/src/` — Chisel 源码（CPU 核心）
+- `build/ysyx_23060000.sv` — 生成的 CPU Verilog（需 sed 修正命名）
+- `sim_soc/` — 接入 ysyxSoC 的仿真环境（Makefile + test_bench_soc.cpp）
+- `/home/lj/ysyx-workbench/ysyxSoC/` — ysyxSoC 环境
+- `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
+- `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
+
+## 当前状态：UART 字符输出测试通过
+
+CPU 从 MROM (0x20000000) 取指，通过 AXI4 总线写 UART THR (0x10000000)，终端成功输出字符 'A'。取指 + Store 全链路验证通过。
+
+## 已完成的工作
+
+### 1. AXI4 接口改造（全链路原生 AXI4）
+- `common/AXI4.scala` — 完整 AXI4 接口定义（id/len/size/burst/last）
+- `corewithbus/IFU.scala` — AR 通道 id=0, len=0, size=2, burst=1, 复位 PC=0x20000000（MROM）
+- `corewithbus/LSU.scala` — size 根据 func 动态设置（lb=0, lh=1, lw=2）
+
+### 2. CLINT（保留在 CPU 内部）
+- `core/Axi4CLINT.scala` — AXI4 接口，地址范围 0x0200_0000~0x0200_ffff
+- mtime 低32位 = 0x0200_BFF8，高32位 = 0x0200_BFFC
+
+### 2.5 ebreak DPI-C 终止机制
+- `core/CSR.scala` — SimEbreak BlackBox（HasBlackBoxInline），ebreak 时调用 DPI-C sim_ebreak()
+- `sim_soc/test_bench_soc.cpp` — sim_ebreak() 设置 flag，主循环检测后提前退出
+
+### 3. DistributedCore
+- `top/top.scala` — 直接暴露 ifu_bus 和 lsu_bus 两个 AXI4Interface IO 端口
+- 流水线内部逻辑不变
+
+### 4. ysyx_23060000 顶层模块
+- `top/ysyx_23060000.scala` — 符合 cpu-interface.md 规范
+- 内部：DistributedCore + AXI4CLINT
+- LSU 总线路由：CLINT 地址(高16位==0x0200)走内部，其余走外部 master
+- IFU 和 LSU(非CLINT) 仲裁共享一个 AXI4 Master（LSU 优先）
+- Slave 接口输出全部赋 0
+
+### 5. Verilog 生成 + sed 修正
+```bash
+cd /home/lj/ysyx-workbench/Graduation-project
+mill playground.runMain top.main_ysyxsoc
+sed -i 's/_bits_//g' build/ysyx_23060000.sv
+sed -i 's/io_master_aw_valid/io_master_awvalid/g; s/io_master_aw_ready/io_master_awready/g' build/ysyx_23060000.sv
+sed -i 's/io_master_w_valid/io_master_wvalid/g; s/io_master_w_ready/io_master_wready/g' build/ysyx_23060000.sv
+sed -i 's/io_master_b_valid/io_master_bvalid/g; s/io_master_b_ready/io_master_bready/g' build/ysyx_23060000.sv
+sed -i 's/io_master_ar_valid/io_master_arvalid/g; s/io_master_ar_ready/io_master_arready/g' build/ysyx_23060000.sv
+sed -i 's/io_master_r_valid/io_master_rvalid/g; s/io_master_r_ready/io_master_rready/g' build/ysyx_23060000.sv
+sed -i 's/io_slave_aw_valid/io_slave_awvalid/g; s/io_slave_aw_ready/io_slave_awready/g' build/ysyx_23060000.sv
+sed -i 's/io_slave_w_valid/io_slave_wvalid/g; s/io_slave_w_ready/io_slave_wready/g' build/ysyx_23060000.sv
+sed -i 's/io_slave_b_valid/io_slave_bvalid/g; s/io_slave_b_ready/io_slave_bready/g' build/ysyx_23060000.sv
+sed -i 's/io_slave_ar_valid/io_slave_arvalid/g; s/io_slave_ar_ready/io_slave_arready/g' build/ysyx_23060000.sv
+sed -i 's/io_slave_r_valid/io_slave_rvalid/g; s/io_slave_r_ready/io_slave_rready/g' build/ysyx_23060000.sv
+# 清理 HasBlackBoxInline 生成的资源文件列表（verilator 不认识）
+sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$d' build/ysyx_23060000.sv
+```
+
+### 6. 仿真环境（sim_soc/）
+- `sim_soc/Makefile` — verilator 编译，顶层 ysyxSoCFull，含 --timescale --no-timing --trace-fst --autoflush
+  - YSYXSOC_HOME = `$(abspath ../../ysyxSoC)` （注意相对路径基于 sim_soc/）
+  - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
+  - char-test.bin 编译目标：riscv32i 交叉编译 + objcopy，链接地址 0x20000000
+- `sim_soc/test_bench_soc.cpp` — 仿真驱动
+  - mrom_read 加载 char-test.bin 到 4KB 缓冲区，flash_read 桩函数（assert(0)）
+  - DPI-C sim_ebreak() 终止机制：CSR 检测到 ebreak 后通知 testbench 退出
+  - 复位 10 周期后主循环（最多 100 万周期，ebreak 提前退出）
+  - FST 波形输出到 obj_dir/ysyxSoCFull.fst
+- `sim_soc/char-test.c` — 最简 UART 测试：直接写 'A' 到 UART THR (0x10000000)
+- `sim_soc/mrom.ld` — 链接脚本，起始地址 0x20000000
+
+### 7. ysyxSoCFull.v 模块名替换
+- `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
+- `ysyx_00000000` → `ysyx_23060000`（已用 sed 完成）
+
+## 编译与运行
+```bash
+cd sim_soc && make char-test.bin  # 交叉编译测试程序
+cd sim_soc && make sim            # verilator 编译
+cd sim_soc && make run            # 运行仿真（自动编译 char-test.bin + sim）
+```
+
+## 下一步待办
+1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载真实程序）
+2. 修改 AM 的 NPC 平台适配 ysyxSoC 地址映射（UART 0x10000000 等）
+3. 恢复 difftest 功能（debug 信号需要通过层级路径访问）
+
+## 已清理的旧文件（已删除，可通过 git 历史恢复）
+- `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
+- `core/SoCTop.scala`、`core/RAM.scala`、`core/Axi4LiteUART.scala`、`core/Axi4LiteCLINT.scala` — 旧 SoC 路由和 DPI-C 虚拟外设
+- `top/main.scala` — 旧入口点（已被 main_ysyxsoc.scala 替代）
