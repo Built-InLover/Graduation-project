@@ -7,6 +7,12 @@
 - `playground/src/` — Chisel 源码（CPU 核心）
 - `build/ysyx_23060000.sv` — 生成的 CPU Verilog（需 sed 修正命名）
 - `sim_soc/` — 接入 ysyxSoC 的仿真环境（Makefile + test_bench_soc.cpp）
+- `am/` — AM ysyxsoc 平台文件（源文件在此，abstract-machine 对应位置为软链接）
+  - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口
+  - `am/scripts/platform/ysyxsoc.mk` — 平台配置
+  - `am/src/riscv/ysyxsoc/start.S` — 启动代码
+  - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
+  - `am/src/riscv/ysyxsoc/linker.ld` — 链接脚本
 - `/home/lj/ysyx-workbench/ysyxSoC/` — ysyxSoC 环境
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
@@ -65,18 +71,20 @@ cd sim_soc && make verilog
 - `sim_soc/mrom.ld` — 链接脚本，起始地址 0x20000000
 
 ### 7. AM 运行时环境（riscv32im-ysyxsoc）
-- `abstract-machine/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
-- `abstract-machine/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
-- `abstract-machine/am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本
+- 源文件在 `am/` 目录下，`abstract-machine/` 对应位置为软链接（绝对路径）
+- `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
+- `am/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
+- `am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本
   - MROM (0x20000000, 4KB): .text + .rodata
   - SRAM (0x0f000000, 8KB): .data + .bss + 栈(4KB) + 堆
   - .data 使用 `AT > MROM` 实现 LMA/VMA 分离
-- `abstract-machine/am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM）
-- `abstract-machine/am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
+- `am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM）
+- `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
   - putch() 写 UART 0x10000000（sb 指令）
   - halt() 通过 ebreak 退出
   - 无 mainargs 机制（简化）
 - sim_soc 支持 `IMG=` 参数指定 bin 文件路径
+- **软链接约定**：后续新增 AM ysyxsoc 相关文件，先在 `am/` 下创建，再去 `abstract-machine/` 对应位置加软链接（绝对路径）
 
 ### 8. ysyxSoCFull.v 模块名替换
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
