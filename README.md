@@ -154,6 +154,21 @@ UART字符输出测试通过，CPU成功通过AXI4总线写入UART16550外设。
 当前状态：CPU从MROM取指 → AXI4总线 → 写UART THR → 终端输出字符'A'，全链路验证通过
 
 下一步：
-1、实现flash_read，让CPU能从flash取到指令，加载真实程序
-2、修改AM的NPC平台适配ysyxSoC地址映射（UART 0x10000000等）
+1、实现flash_read，让CPU能从flash取到指令，加载更大程序
+2、跑通更多cpu-tests（可能需要.data搬运逻辑）
+3、恢复difftest功能
+
+------new--------
+创建AM运行时环境 riscv32im-ysyxsoc，cpu-tests/dummy在ysyxSoC仿真中通过。
+
+内存布局：代码在MROM(0x20000000, 4KB)，数据/栈在SRAM(0x0f000000, 8KB)，UART在0x10000000。
+链接脚本实现MROM/SRAM分离：.text+.rodata放MROM，.data+.bss+栈放SRAM。
+AM平台只包含最小TRM（start.S + trm.c），无IOE/CTE。
+sim_soc支持IMG=参数指定bin文件路径，不再硬编码char-test.bin。
+
+验证：dummy测试48周期内ebreak正常退出。
+
+下一步：
+1、实现flash_read，突破MROM 4KB限制
+2、跑通更多cpu-tests
 3、恢复difftest功能

@@ -22,7 +22,7 @@ class IFU extends Module {
     val epoch = Bool()
   }
   
-  val pc_reg    = RegInit("h8000_0000".U(32.W))
+  val pc_reg    = RegInit("h2000_0000".U(32.W))
   val epoch_reg = RegInit(false.B)
   val meta_queue = Module(new Queue(new IfuMetaBundle, pipelineDepth, pipe = true))
 

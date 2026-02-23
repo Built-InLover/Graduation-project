@@ -11,9 +11,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：UART 字符输出测试通过
+## 当前状态：AM 运行时 + cpu-tests/dummy 通过
 
-CPU 从 MROM (0x20000000) 取指，通过 AXI4 总线写 UART THR (0x10000000)，终端成功输出字符 'A'。取指 + Store 全链路验证通过。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建，cpu-tests/dummy 在 ysyxSoC 仿真中 48 周期内正常 ebreak 退出。
 
 ## 已完成的工作
 
@@ -73,20 +73,41 @@ sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$d' buil
 - `sim_soc/char-test.c` — 最简 UART 测试：直接写 'A' 到 UART THR (0x10000000)
 - `sim_soc/mrom.ld` — 链接脚本，起始地址 0x20000000
 
-### 7. ysyxSoCFull.v 模块名替换
+### 7. AM 运行时环境（riscv32im-ysyxsoc）
+- `abstract-machine/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
+- `abstract-machine/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
+- `abstract-machine/am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本
+  - MROM (0x20000000, 4KB): .text + .rodata
+  - SRAM (0x0f000000, 8KB): .data + .bss + 栈(4KB) + 堆
+  - .data 使用 `AT > MROM` 实现 LMA/VMA 分离
+- `abstract-machine/am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM）
+- `abstract-machine/am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
+  - putch() 写 UART 0x10000000（sb 指令）
+  - halt() 通过 ebreak 退出
+  - 无 mainargs 机制（简化）
+- sim_soc 支持 `IMG=` 参数指定 bin 文件路径
+
+### 8. ysyxSoCFull.v 模块名替换
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
 - `ysyx_00000000` → `ysyx_23060000`（已用 sed 完成）
 
 ## 编译与运行
 ```bash
-cd sim_soc && make char-test.bin  # 交叉编译测试程序
-cd sim_soc && make sim            # verilator 编译
-cd sim_soc && make run            # 运行仿真（自动编译 char-test.bin + sim）
+# 编译 AM 测试程序
+cd /home/lj/ysyx-workbench/am-kernels/tests/cpu-tests
+make ARCH=riscv32im-ysyxsoc ALL=dummy
+
+# verilator 编译 + 运行仿真
+cd sim_soc && make sim
+cd sim_soc && make run IMG=/path/to/test.bin
+
+# 旧的 char-test 仍可用
+cd sim_soc && make char-test.bin && make run
 ```
 
 ## 下一步待办
-1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载真实程序）
-2. 修改 AM 的 NPC 平台适配 ysyxSoC 地址映射（UART 0x10000000 等）
+1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
+2. 跑通更多 cpu-tests（可能需要 .data 搬运逻辑）
 3. 恢复 difftest 功能（debug 信号需要通过层级路径访问）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）

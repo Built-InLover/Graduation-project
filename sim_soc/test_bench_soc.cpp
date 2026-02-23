@@ -44,8 +44,9 @@ void one_cycle() {
 }
 
 int main(int argc, char **argv) {
-    FILE *fp = fopen("char-test.bin", "rb");
-    assert(fp && "cannot open char-test.bin");
+    const char *bin_file = (argc > 1) ? argv[1] : "char-test.bin";
+    FILE *fp = fopen(bin_file, "rb");
+    if (!fp) { fprintf(stderr, "cannot open %s\n", bin_file); return 1; }
     size_t n = fread(mrom_data, 1, sizeof(mrom_data), fp);
     fclose(fp);
     printf("Loaded %zu bytes into MROM\n", n);

@@ -4,6 +4,23 @@ import chisel3._
 import chisel3.util._
 import essentials._
 
+// DPI-C BlackBox for sim_ebreak
+class SimEbreak extends BlackBox with HasBlackBoxInline {
+  val io = IO(new Bundle {
+    val trigger = Input(Bool())
+  })
+  setInline("SimEbreak.v",
+    """module SimEbreak(
+      |  input trigger
+      |);
+      |  import "DPI-C" function void sim_ebreak();
+      |  always @(*) begin
+      |    if (trigger) sim_ebreak();
+      |  end
+      |endmodule
+      |""".stripMargin)
+}
+
 // ==================================================================
 // CSRUnit
 // ==================================================================
@@ -152,4 +169,8 @@ class CSRUnit extends Module {
   io.redirect.valid    := is_jmp
   io.redirect.bits.is_privileged   := true.B
   io.redirect.bits.targetPC := Mux(is_trap, reg_mtvec, reg_mepc)
+
+  // DPI-C: notify testbench on ebreak
+  val sim_ebreak_inst = Module(new SimEbreak)
+  sim_ebreak_inst.io.trigger := is_ebreak && io.in.valid
 }

@@ -46,8 +46,8 @@ sim: $(VSRCS) $(CSRCS)
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
 
-run: sim char-test.bin
-	$(OBJ_DIR)/$(TOPNAME)
+run: sim
+	$(OBJ_DIR)/$(TOPNAME) $(IMG)
 
 clean:
 	rm -rf $(OBJ_DIR) char-test.elf char-test.bin
