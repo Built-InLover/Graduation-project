@@ -140,10 +140,13 @@ object CSRAddress {
   val MTVEC   = 0x305.U(12.W)
 }
 object CauseCode {
-  val ENVCALL_U = 8.U(32.W)
-  val ENVCALL_S = 9.U(32.W)
-  val ENVCALL_M = 11.U(32.W)
-  val BREAKPOINT = 3.U(32.W)
+  val INST_ACCESS_FAULT  = 1.U(32.W)
+  val BREAKPOINT         = 3.U(32.W)
+  val LOAD_ACCESS_FAULT  = 5.U(32.W)
+  val STORE_ACCESS_FAULT = 7.U(32.W)
+  val ENVCALL_U          = 8.U(32.W)
+  val ENVCALL_S          = 9.U(32.W)
+  val ENVCALL_M          = 11.U(32.W)
 }
 object PrivilegeLevel {
   val PRV_U = "b00".U(2.W)

@@ -113,6 +113,47 @@ mycore 和 npc 的硬件地址映射完全一样，只是支持的指令集不�
 
 NEMU 作为模拟器，自己统一定义了所有 ISA 的外设地址映射（都是 0xa0000xxx），所以 IOE 代码可以放在 `am/src/platform/nemu/` 跨架构共享。而真实硬件平台（npc、ysyxsoc）的地址映射各不相同，只能放在 `am/src/riscv/{platform}/` 下。
 
+## DiffTest 架构
+
+DiffTest（差分测试）用 NEMU 作为参考模型，逐条指令对比 NPC 和 NEMU 的状态。
+
+```
+NPC (Verilator 仿真)                    NEMU (.so 共享库)
+    │                                       │
+    │  每条指令 commit 时                     │
+    │  DPI-C → sim_set_gpr(32次)            │
+    │  DPI-C → sim_difftest(pc,csr)         │
+    │                                       │
+    ▼                                       ▼
+testbench (C++)                         dlopen 加载
+    │                                       │
+    │  npc_cpu = {gpr[], pc, csr}           │  ref_difftest_exec(1)
+    │                                       │  ref_difftest_regcpy → ref_cpu
+    │                                       │
+    └──────── 比较 npc_cpu vs ref_cpu ───────┘
+```
+
+关键约定：
+- NEMU 必须编译为 .so（CONFIG_TARGET_SHARE），不能是 PIE
+- 初始化时需要 memcpy 镜像到 NEMU 的对应地址（MROM 0x20000000）
+- 初始化时需要 regcpy 同步初始寄存器状态（特别是 mstatus=0x1800）
+- NPC 的 CPU_state 结构体必须与 NEMU 的字段布局完全一致
+
+## AXI4 resp 与 Access Fault
+
+AXI4 协议中 R 通道和 B 通道都有 resp 字段（2位）：
+- 0b00 (OKAY) — 正常完成
+- 0b01 (EXOKAY) — 独占访问成功
+- 0b10 (SLVERR) — 从设备错误
+- 0b11 (DECERR) — 地址译码错误（没有设备响应该地址）
+
+ysyxSoC 的 xbar 在地址无法匹配任何设备时返回 DECERR。CPU 应检查 resp 并触发对应异常：
+- 取指 resp 非零 → Instruction Access Fault (mcause=1)
+- Load resp 非零 → Load Access Fault (mcause=5)
+- Store resp 非零 → Store/AMO Access Fault (mcause=7)
+
+这比让总线挂死要好——至少能跳到 trap handler 报告错误地址。
+
 ## 踩坑记录
 
 - char-test.c 不加 -O2 时 gcc 生成函数序言，sp 未初始化导致 store 到非法地址，AXI 总线挂死

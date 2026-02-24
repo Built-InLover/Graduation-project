@@ -270,4 +270,12 @@ class DistributedCore extends Module {
   sim_regtrace.io.pc     := io.debug_pc
   sim_regtrace.io.rd     := current_rf_waddr
   sim_regtrace.io.wdata  := current_rf_wdata
+
+  val sim_difftest = Module(new SimDifftest)
+  sim_difftest.io.clock  := clock
+  sim_difftest.io.enable := io.inst_over
+  sim_difftest.io.pc     := io.debug_pc
+  sim_difftest.io.dnpc   := io.debug_dnpc
+  sim_difftest.io.regs   := io.debug_regs
+  sim_difftest.io.csrs   := io.debug_csr
 }

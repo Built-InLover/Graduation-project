@@ -21,8 +21,9 @@ class LSU extends Module {
       val dnpc   = UInt(32.W)
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
-      val rfWen  = Bool()    
-      val uop_id = UInt(4.W) 
+      val rfWen  = Bool()
+      val uop_id = UInt(4.W)
+      val fault  = Bool()
     })
     val busy_is_load = Output(Bool())
     val busy_rd      = Output(UInt(5.W))
@@ -134,6 +135,7 @@ class LSU extends Module {
   io.out.bits.rdAddr := rdAddr_reg
   io.out.bits.uop_id := id_reg
   io.out.bits.rfWen  := (state === s_wait_resp) && wait_is_load
+  io.out.bits.fault  := Mux(wait_is_load, io.bus.r.bits.resp =/= 0.U, io.bus.b.bits.resp =/= 0.U)
 
   io.busy_is_load := (state === s_wait_resp) && wait_is_load
   io.busy_rd      := rdAddr_reg

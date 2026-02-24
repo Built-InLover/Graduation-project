@@ -8,6 +8,10 @@
 #include <cstring>
 #include <cassert>
 
+#ifdef DIFFTEST_ON
+#include <dlfcn.h>
+#endif
+
 #ifndef MAX_CYCLES
 #define MAX_CYCLES 10000
 #endif
@@ -29,6 +33,107 @@ extern "C" void mrom_read(int32_t addr, int32_t *data) {
 // ebreak 终止机制
 static bool ebreak_flag = false;
 extern "C" void sim_ebreak() { ebreak_flag = true; }
+
+// ==================== DiffTest ====================
+#ifdef DIFFTEST_ON
+enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };
+
+typedef struct {
+    uint32_t gpr[32];
+    uint32_t pc;
+    struct { uint32_t mtvec, mepc, mstatus, mcause; } csr;
+} CPU_state;
+
+static CPU_state npc_cpu = {};
+static bool difftest_commit = false;
+
+static void (*ref_difftest_memcpy)(uint32_t, void*, size_t, bool);
+static void (*ref_difftest_regcpy)(void*, bool);
+static void (*ref_difftest_exec)(uint64_t);
+
+extern "C" void sim_set_gpr(int idx, int val) {
+    npc_cpu.gpr[idx] = (uint32_t)val;
+}
+
+// NPC debug_csr: [0]=mcause, [1]=mepc, [2]=mstatus, [3]=mtvec
+// NEMU CSR struct: { mtvec, mepc, mstatus, mcause }
+extern "C" void sim_difftest(int pc, int dnpc, int mcause, int mepc, int mstatus, int mtvec) {
+    npc_cpu.pc = (uint32_t)dnpc;
+    npc_cpu.csr.mcause  = (uint32_t)mcause;
+    npc_cpu.csr.mepc    = (uint32_t)mepc;
+    npc_cpu.csr.mstatus = (uint32_t)mstatus;
+    npc_cpu.csr.mtvec   = (uint32_t)mtvec;
+    difftest_commit = true;
+}
+
+static const char *reg_names[] = {
+    "zero","ra","sp","gp","tp","t0","t1","t2",
+    "s0","s1","a0","a1","a2","a3","a4","a5",
+    "a6","a7","s2","s3","s4","s5","s6","s7",
+    "s8","s9","s10","s11","t3","t4","t5","t6"
+};
+
+static bool difftest_check() {
+    CPU_state ref_cpu = {};
+    ref_difftest_exec(1);
+    ref_difftest_regcpy(&ref_cpu, DIFFTEST_TO_DUT);
+
+    bool pass = true;
+    if (ref_cpu.pc != npc_cpu.pc) {
+        printf("[difftest] PC mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.pc, npc_cpu.pc);
+        pass = false;
+    }
+    for (int i = 0; i < 32; i++) {
+        if (ref_cpu.gpr[i] != npc_cpu.gpr[i]) {
+            printf("[difftest] GPR %s(x%d) mismatch: ref=0x%08x npc=0x%08x\n",
+                   reg_names[i], i, ref_cpu.gpr[i], npc_cpu.gpr[i]);
+            pass = false;
+        }
+    }
+    if (ref_cpu.csr.mcause != npc_cpu.csr.mcause) {
+        printf("[difftest] mcause mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mcause, npc_cpu.csr.mcause);
+        pass = false;
+    }
+    if (ref_cpu.csr.mepc != npc_cpu.csr.mepc) {
+        printf("[difftest] mepc mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mepc, npc_cpu.csr.mepc);
+        pass = false;
+    }
+    if (ref_cpu.csr.mstatus != npc_cpu.csr.mstatus) {
+        printf("[difftest] mstatus mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mstatus, npc_cpu.csr.mstatus);
+        pass = false;
+    }
+    if (ref_cpu.csr.mtvec != npc_cpu.csr.mtvec) {
+        printf("[difftest] mtvec mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mtvec, npc_cpu.csr.mtvec);
+        pass = false;
+    }
+    difftest_commit = false;
+    return pass;
+}
+
+static void init_difftest(const char *ref_so, size_t img_size) {
+    void *handle = dlopen(ref_so, RTLD_LAZY);
+    if (!handle) { fprintf(stderr, "dlopen failed: %s\n", dlerror()); assert(0); }
+
+    ref_difftest_memcpy = (decltype(ref_difftest_memcpy))dlsym(handle, "difftest_memcpy");
+    ref_difftest_regcpy = (decltype(ref_difftest_regcpy))dlsym(handle, "difftest_regcpy");
+    ref_difftest_exec   = (decltype(ref_difftest_exec))dlsym(handle, "difftest_exec");
+    void (*ref_difftest_init)(int) = (void(*)(int))dlsym(handle, "difftest_init");
+    assert(ref_difftest_memcpy && ref_difftest_regcpy && ref_difftest_exec && ref_difftest_init);
+
+    ref_difftest_init(0);
+    ref_difftest_memcpy(0x20000000, mrom_data, img_size, DIFFTEST_TO_REF);
+
+    // 初始化 NPC 状态并同步到 REF
+    npc_cpu.pc = 0x20000000;
+    npc_cpu.csr.mstatus = 0x1800;
+    ref_difftest_regcpy(&npc_cpu, DIFFTEST_TO_REF);
+
+    printf("[difftest] initialized with %s\n", ref_so);
+}
+#else
+extern "C" void sim_set_gpr(int idx, int val) {}
+extern "C" void sim_difftest(int pc, int dnpc, int mcause, int mepc, int mstatus, int mtvec) {}
+#endif
 
 // 调试日志 DPI-C
 extern "C" void sim_itrace(int pc, int dnpc) {
@@ -73,11 +178,22 @@ void one_cycle() {
 
 int main(int argc, char **argv) {
     const char *bin_file = (argc > 1) ? argv[1] : "char-test.bin";
+    const char *diff_so  = (argc > 2) ? argv[2] : NULL;
+
     FILE *fp = fopen(bin_file, "rb");
     if (!fp) { fprintf(stderr, "cannot open %s\n", bin_file); return 1; }
     size_t n = fread(mrom_data, 1, sizeof(mrom_data), fp);
     fclose(fp);
     printf("Loaded %zu bytes into MROM\n", n);
+
+#ifdef DIFFTEST_ON
+    if (diff_so) {
+        init_difftest(diff_so, n);
+    } else {
+        fprintf(stderr, "DIFFTEST_ON but no ref .so provided (argv[2])\n");
+        return 1;
+    }
+#endif
 
     contextp = new VerilatedContext;
     Verilated::commandArgs(argc, argv);
@@ -106,6 +222,19 @@ int main(int argc, char **argv) {
             printf("ebreak detected at cycle %d\n", i);
             break;
         }
+#ifdef DIFFTEST_ON
+        if (difftest_commit) {
+            if (!difftest_check()) {
+                printf("[difftest] FAIL at cycle %d\n", i);
+#ifdef TRACE_ON
+                tfp->close();
+#endif
+                delete top;
+                delete contextp;
+                return 1;
+            }
+        }
+#endif
     }
 
     printf("--- ysyxSoC Simulation End (%ld cycles) ---\n", contextp->time() / 2);

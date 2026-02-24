@@ -24,7 +24,8 @@ class WBU extends Module {
       val rdata  = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
-      val uop_id = UInt(4.W) // [新增] 指令身份证
+      val uop_id = UInt(4.W)
+      val fault  = Bool()
     }))
     // ---------------------------------------------------------
     // 2. 控制信号输入 (Arbitration)

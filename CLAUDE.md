@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：AM 运行时 + cpu-tests/dummy、fib 通过
+## 当前状态：DiffTest 恢复 + Access Fault 异常
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 81 周期 ebreak 退出，fib（含 .data 搬运）3009 周期正常完成。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 和 fib 通过 DiffTest 对拍。IFU 侧 Access Fault 已实现（AXI resp 非零时触发 trap）。
 
 ## 已完成的工作
 
@@ -90,6 +90,30 @@ cd sim_soc && make verilog
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
 - `ysyx_00000000` → `ysyx_23060000`（已用 sed 完成）
 
+### 9. DiffTest（DPI-C 方案）
+- `core/SimDebug.scala` — SimDifftest BlackBox，内联 Verilog 调用 sim_set_gpr/sim_difftest
+- `top/top.scala` — DistributedCore 中实例化 SimDifftest，连接 debug_regs/debug_csr
+- `sim_soc/test_bench_soc.cpp` — DiffTest 逻辑（`#ifdef DIFFTEST_ON`）
+  - CPU_state 结构体与 NEMU 一致（注意 CSR 字段顺序：mtvec, mepc, mstatus, mcause）
+  - NPC debug_csr 顺序：[0]=mcause, [1]=mepc, [2]=mstatus, [3]=mtvec
+  - DPI-C: sim_set_gpr() 设置 GPR, sim_difftest() 提交指令
+  - init_difftest(): dlopen NEMU .so → difftest_init → memcpy MROM → regcpy 同步初始状态
+  - 主循环每拍检查 difftest_commit，比较 GPR/PC/CSR
+- `sim_soc/Makefile` — DIFFTEST=1 启用，LDFLAGS 加 -ldl，run 目标接受 DIFF 参数
+- NEMU 配置：`.config` 中 `CONFIG_TARGET_SHARE=y`（非 NATIVE_ELF），编译产物为 .so
+  - `nemu/src/memory/paddr.c` — TARGET_SHARE 下添加 MROM(0x20000000,4KB) + SRAM(0x0f000000,8KB)
+  - `nemu/src/isa/riscv32/init.c` — TARGET_SHARE 下 PC=0x20000000，跳过内置镜像
+
+### 10. Access Fault 异常
+- `essentials/const.scala` — CauseCode 新增 INST_ACCESS_FAULT(1), LOAD_ACCESS_FAULT(5), STORE_ACCESS_FAULT(7)
+- `corewithbus/IFU.scala` — inst_queue 存 (data, fault) 对，fault = r.resp =/= 0
+  - IFU out 端口新增 fault 字段
+- `corewithbus/IDU.scala` — 接收 fault，fault 时覆盖为 CSR jmp（imm=2 标记 inst_access_fault）
+- `core/CSR.scala` — 识别 imm=2 为 inst_access_fault，写 mcause=1，跳转 mtvec
+  - mstatus 初始值改为 0x1800（MPP=Machine）
+- `corewithbus/LSU.scala` — out 端口新增 fault 字段（resp 检测），暂未接入 trap 路径
+- `corewithbus/WBU.scala` — lsuIn 端口新增 fault 字段
+
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -99,9 +123,15 @@ cd sim_soc && make verilog
 cd /home/lj/ysyx-workbench/am-kernels/tests/cpu-tests
 make ARCH=riscv32im-ysyxsoc ALL=dummy
 
-# verilator 编译 + 运行仿真
+# verilator 编译 + 运行仿真（不带 DiffTest）
 cd sim_soc && make sim
 cd sim_soc && make run IMG=/path/to/test.bin
+
+# 带 DiffTest 运行
+cd sim_soc && make run DIFFTEST=1 IMG=/path/to/test.bin DIFF=/home/lj/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so
+
+# 编译 NEMU .so（需要 CONFIG_TARGET_SHARE=y）
+cd nemu && make ISA=riscv32 -j$(nproc)
 
 # 旧的 char-test 仍可用
 cd sim_soc && make char-test.bin && make run
@@ -109,8 +139,8 @@ cd sim_soc && make char-test.bin && make run
 
 ## 下一步待办
 1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
-2. 跑通更多 cpu-tests
-3. 恢复 difftest 功能（debug 信号需要通过层级路径访问）
+2. 跑通更多 cpu-tests（带 DiffTest）
+3. LSU Access Fault 接入 trap 路径（当前仅输出 fault 信号，未触发异常）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

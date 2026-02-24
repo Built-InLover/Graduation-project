@@ -22,6 +22,11 @@ ifdef MAX_CYCLES
 CFLAGS_EXTRA += -DMAX_CYCLES=$(MAX_CYCLES)
 endif
 
+ifdef DIFFTEST
+CFLAGS_EXTRA += -DDIFFTEST_ON
+LDFLAGS_EXTRA += -ldl
+endif
+
 OBJ_DIR = ./obj_dir
 
 # Cross-compile toolchain
@@ -67,11 +72,12 @@ sim: $(VSRCS) $(CSRCS)
 		--top-module $(TOPNAME) \
 		$(addprefix -I, $(YSYXSOC_HOME)/perip/uart16550/rtl $(YSYXSOC_HOME)/perip/spi/rtl) \
 		$(if $(CFLAGS_EXTRA),-CFLAGS "$(CFLAGS_EXTRA)") \
+		$(if $(LDFLAGS_EXTRA),-LDFLAGS "$(LDFLAGS_EXTRA)") \
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
 
 run: sim
-	$(OBJ_DIR)/$(TOPNAME) $(IMG)
+	$(OBJ_DIR)/$(TOPNAME) $(IMG) $(DIFF)
 
 clean:
 	rm -rf $(OBJ_DIR) char-test.elf char-test.bin

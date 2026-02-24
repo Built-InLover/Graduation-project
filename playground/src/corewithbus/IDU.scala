@@ -9,8 +9,9 @@ class IDU extends Module with HasInstrType {
   val io = IO(new Bundle {
     // 1. 基础输入接口 (来自 IFU)
     val in = Flipped(Decoupled(new Bundle {
-      val inst = UInt(32.W)
-      val pc = UInt(32.W)
+      val inst  = UInt(32.W)
+      val pc    = UInt(32.W)
+      val fault = Bool()
     }))
     // 2. 解耦输出接口 (发往 EXU)
     val out = Decoupled(new Bundle {
@@ -119,22 +120,24 @@ class IDU extends Module with HasInstrType {
   // ==================================================================
   //                4. 输出赋值
   // ==================================================================
+  val ifu_fault = io.in.bits.fault
+
   io.out.bits.pc     := pc
-  io.out.bits.uop_id := uop_counter // [关键] 传给下游
+  io.out.bits.uop_id := uop_counter
   io.out.bits.src1   := src1_out
   io.out.bits.src2   := src2_out
-  io.out.bits.imm    := final_imm
-  io.out.bits.fuType := fuType
-  io.out.bits.fuOp   := fuOp
-  io.out.bits.rdAddr := rd_addr
-  io.out.bits.rfWen  := isrfWen(instrType)
+  io.out.bits.imm    := Mux(ifu_fault, 2.U, final_imm) // fault → imm=2 作为 inst_access_fault 标记
+  io.out.bits.fuType := Mux(ifu_fault, FuType.csr, fuType)
+  io.out.bits.fuOp   := Mux(ifu_fault, CSROpType.jmp, fuOp)
+  io.out.bits.rdAddr := Mux(ifu_fault, 0.U, rd_addr)
+  io.out.bits.rfWen  := Mux(ifu_fault, false.B, isrfWen(instrType))
   
   // 辅助位
-  io.out.bits.isLoad   := (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
-  io.out.bits.isStore  := (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
-  io.out.bits.isBranch := (fuType === FuType.bru) && (instrType === InstrB)
-  io.out.bits.isJump   := (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
-  io.out.bits.useImm   := (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
+  io.out.bits.isLoad   := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
+  io.out.bits.isStore  := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
+  io.out.bits.isBranch := !ifu_fault && (fuType === FuType.bru) && (instrType === InstrB)
+  io.out.bits.isJump   := !ifu_fault && (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
+  io.out.bits.useImm   := ifu_fault || (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
 
   // ==================================================================
   //                5. 握手

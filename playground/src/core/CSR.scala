@@ -54,7 +54,7 @@ class CSRUnit extends Module {
   // ==================================================================
   // 1. 状态寄存器 (Copy from Reference)
   // ==================================================================
-  val reg_mstatus = RegInit(0.U(32.W)) // MPP=3 (Machine Mode)
+  val reg_mstatus = RegInit("h1800".U(32.W)) // MPP=3 (Machine Mode)
   val reg_mepc    = RegInit(0.U(32.W))
   val reg_mcause  = RegInit(0.U(32.W))
   val reg_mtvec   = RegInit(0.U(32.W))
@@ -78,11 +78,12 @@ class CSRUnit extends Module {
   // 你也可以根据具体的 imm 编码来改写这里
   val is_jmp   = io.in.valid && csrOpType === CSROpType.jmp
 
-  val is_ebreak = is_jmp && io.in.bits.imm === 1.U      
-  val is_ecall = is_jmp && io.in.bits.imm === 0.U      // 假设 IDU 传 0
-  val is_mret  = is_jmp && io.in.bits.imm === 0x302.U  // 假设 IDU 传 0x302 (MRET funct12)
+  val is_ebreak = is_jmp && io.in.bits.imm === 1.U
+  val is_ecall = is_jmp && io.in.bits.imm === 0.U
+  val is_mret  = is_jmp && io.in.bits.imm === 0x302.U
+  val is_inst_access_fault = is_jmp && io.in.bits.imm === 2.U
 
-  val is_trap   = is_ecall || is_ebreak
+  val is_trap   = is_ecall || is_ebreak || is_inst_access_fault
   
   // 当前特权级 (暂时写死 Machine Mode，后续可扩展)
   val currentPriv = PrivilegeLevel.PRV_M
@@ -119,7 +120,9 @@ class CSRUnit extends Module {
 
       // 2. 更新 MCAUSE
       when(is_ebreak) {
-        reg_mcause := CauseCode.BREAKPOINT // [新增] 固定为 3
+        reg_mcause := CauseCode.BREAKPOINT
+      } .elsewhen(is_inst_access_fault) {
+        reg_mcause := CauseCode.INST_ACCESS_FAULT
       } .otherwise {
         // ECALL 根据当前特权级区分
         reg_mcause := MuxCase(CauseCode.ENVCALL_M, Seq(

@@ -8,8 +8,9 @@ class IFU extends Module {
   val io = IO(new Bundle {
     val bus = new AXI4Interface(AXI4Params(32, 32, 4))
     val out = Decoupled(new Bundle {
-      val inst = UInt(32.W)
-      val pc   = UInt(32.W)
+      val inst  = UInt(32.W)
+      val pc    = UInt(32.W)
+      val fault = Bool()
     })
     val redirect = Flipped(Valid(new Bundle {
       val targetPC = UInt(32.W)
@@ -63,12 +64,16 @@ class IFU extends Module {
   // ==================================================================
   //                        3. AXI 读响应 → inst_queue 缓冲
   // ==================================================================
-  val inst_queue = Module(new Queue(UInt(32.W), pipelineDepth, pipe = true))
+  val inst_queue = Module(new Queue(new Bundle {
+    val data  = UInt(32.W)
+    val fault = Bool()
+  }, pipelineDepth, pipe = true))
 
   // R 通道 ready 只看 inst_queue 是否能入队，不依赖下游流水线
   io.bus.r.ready := inst_queue.io.enq.ready
-  inst_queue.io.enq.valid := io.bus.r.valid
-  inst_queue.io.enq.bits  := io.bus.r.bits.data
+  inst_queue.io.enq.valid      := io.bus.r.valid
+  inst_queue.io.enq.bits.data  := io.bus.r.bits.data
+  inst_queue.io.enq.bits.fault := io.bus.r.bits.resp =/= 0.U
 
   // ==================================================================
   //                        4. inst_queue + meta_queue 同步出队
@@ -81,7 +86,8 @@ class IFU extends Module {
   inst_queue.io.deq.ready := deq_ready
   meta_queue.io.deq.ready := deq_ready
 
-  io.out.valid     := both_valid && is_valid_inst
-  io.out.bits.inst := inst_queue.io.deq.bits
-  io.out.bits.pc   := meta_queue.io.deq.bits.pc
+  io.out.valid      := both_valid && is_valid_inst
+  io.out.bits.inst  := inst_queue.io.deq.bits.data
+  io.out.bits.pc    := meta_queue.io.deq.bits.pc
+  io.out.bits.fault := inst_queue.io.deq.bits.fault
 }
