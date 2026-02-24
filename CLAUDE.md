@@ -142,6 +142,22 @@ cd sim_soc && make char-test.bin && make run
 2. 跑通更多 cpu-tests（带 DiffTest）
 3. LSU Access Fault 接入 trap 路径（当前仅输出 fault 信号，未触发异常）
 
+## 开发历程
+
+1. 五级流水线基础架构（IFU/IDU/EXU/LSU/WBU），内部异步总线，DPI-C 虚拟内存
+2. 仿真环境 + ebreak 终止 + DiffTest 初步通过
+3. IFU 状态机完善，WBU 加入 EXU/LSU 仲裁保证顺序提交
+4. RAW 前递 + Load-Use 暂停，meta_queue 实现 IFU 流水线 + epoch 冲刷，order_q 顺序退休
+5. 跑通 RV32E 全部测试集
+6. 独立 mycore，实现 M 扩展，通过 RV32IM 测试 + cpu-tests
+7. 成功运行 rt-thread-am
+8. AXI4-Lite 总线，RTL 原生 UART/TIMER（仍通过仿真环境）
+9. 接入 ysyxSoC：AXI4 全链路改造，脱离 DPI-C 虚拟环境
+10. UART 字符输出测试通过（char-test）
+11. IFU/LSU 共享端口死锁修复（inst_queue + ID 路由）
+12. AM 运行时 riscv32im-ysyxsoc，dummy/fib 通过
+13. DiffTest 恢复（DPI-C 方案），Access Fault 异常（IFU 侧）
+
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
 - `core/SoCTop.scala`、`core/RAM.scala`、`core/Axi4LiteUART.scala`、`core/Axi4LiteCLINT.scala` — 旧 SoC 路由和 DPI-C 虚拟外设

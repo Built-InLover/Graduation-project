@@ -1,4 +1,4 @@
-# ysyxSoC 系统知识笔记
+# 项目知识笔记
 
 ## CPU 和 ysyxSoC 的关系
 
@@ -84,35 +84,6 @@ CLINT 放在 CPU 内部是因为它是 CPU 私有的定时器，不需要走外�
 
 CPU 只需保证 AXI4 协议正确、地址正确。路由、转换、设备交互全是 SoC 的事。
 
-## Abstract Machine 目录结构与命名规则
-
-AM 的架构是一个 **ISA × 平台** 的二维矩阵。
-
-### scripts/ — 编译配置
-
-- `scripts/isa/{isa}.mk` — 纯 ISA 相关（工具链前缀、objdump），与平台无关
-- `scripts/platform/{platform}.mk` — 纯平台相关（AM_SRCS、链接脚本、image/run 目标），与 ISA 无关
-- `scripts/{isa}-{platform}.mk` — 入口文件，组合两个维度 + 扩展（如 im 加 libgcc）
-
-例：`riscv32im-ysyxsoc.mk` 包含 `isa/riscv.mk` + `platform/ysyxsoc.mk`，再加 RV32IM 特有的 march/libgcc。
-
-### am/src/ — 源码实现
-
-- `am/src/{isa}/{platform}/` — ISA+平台绑定的代码（start.S、trm.c、linker.ld）
-  - 不同平台地址映射不同，所以各自独立：npc 的 putch 写 0xa00003f8，ysyxsoc 写 0x10000000
-- `am/src/platform/{name}/` — 跨 ISA 的通用代码
-  - `dummy/` — 空桩实现（vme.c、mpe.c），任何不支持虚存/多处理器的平台都复用
-  - `nemu/` — NEMU 模拟器统一定义外设地址（0xa0000xxx），所以 IOE 代码可跨架构共享
-- `am/src/native/` — 宿主机原生运行，每个人环境不同，单独实现
-
-### 为什么 mycore 没有独立源码目录
-
-mycore 和 npc 的硬件地址映射完全一样，只是支持的指令集不同。所以 `platform/mycore.mk` 直接复用 `riscv/npc/` 的源文件，不需要独立目录。
-
-### 真实硬件 vs 模拟器
-
-NEMU 作为模拟器，自己统一定义了所有 ISA 的外设地址映射（都是 0xa0000xxx），所以 IOE 代码可以放在 `am/src/platform/nemu/` 跨架构共享。而真实硬件平台（npc、ysyxsoc）的地址映射各不相同，只能放在 `am/src/riscv/{platform}/` 下。
-
 ## DiffTest 架构
 
 DiffTest（差分测试）用 NEMU 作为参考模型，逐条指令对比 NPC 和 NEMU 的状态。
@@ -138,6 +109,7 @@ testbench (C++)                         dlopen 加载
 - 初始化时需要 memcpy 镜像到 NEMU 的对应地址（MROM 0x20000000）
 - 初始化时需要 regcpy 同步初始寄存器状态（特别是 mstatus=0x1800）
 - NPC 的 CPU_state 结构体必须与 NEMU 的字段布局完全一致
+- regcpy 只能操作 NEMU 侧状态，无法反向写入 RTL 寄存器
 
 ## AXI4 resp 与 Access Fault
 
@@ -154,10 +126,53 @@ ysyxSoC 的 xbar 在地址无法匹配任何设备时返回 DECERR。CPU 应检�
 
 这比让总线挂死要好——至少能跳到 trap handler 报告错误地址。
 
+## Abstract Machine 目录结构与命名规则
+
+AM 的架构是一个 **ISA × 平台** 的二维矩阵。
+
+### scripts/ — 编译配置
+
+- `scripts/isa/{isa}.mk` — 纯 ISA 相关（工具链前缀、objdump），与平台无关
+- `scripts/platform/{platform}.mk` — 纯平台相关（AM_SRCS、链接脚本、image/run 目标），与 ISA 无关
+- `scripts/{isa}-{platform}.mk` — 入口文件，组合两个维度 + 扩展（如 im 加 libgcc）
+
+例：`riscv32im-ysyxsoc.mk` 包含 `isa/riscv.mk` + `platform/ysyxsoc.mk`，再加 RV32IM 特有的 march/libgcc。
+
+### am/src/ — 源码实现
+
+- `am/src/{isa}/{platform}/` — ISA+平台绑定的代码（start.S、trm.c、linker.ld）
+  - 不同平台地址映射不同，所以各自独立：npc 的 putch 写 0xa00003f8，ysyxsoc 写 0x10000000
+- `am/src/platform/{name}/` — 跨 ISA 的通用代码
+  - `dummy/` — 空桩实现（vme.c、mpe.c），任何不支持虚存/多处理器的平台都复用
+  - `nemu/` — NEMU 模拟器统一定义外设地址（0xa0000xxx），所以 IOE 代码可跨架构共享
+
+## 数据前递与记分牌
+
+forward_sources 本质上是一张分布式的记分牌（Scoreboard）：
+- Valid=1 的源：数据已就绪，可以直接旁路
+- Valid=0 的源：占坑但数据未就绪，IDU 必须暂停等待
+
+通用心法——只要一条指令进入了部件还没退休，它就必须在 ForwardingBus 上把 pend 拉高并亮出 uop_id 和 rd。数据算好了拉高 valid 放上数据，没算好就 valid=0。IDU 找 ID 距离最近的源，数据没好就 Stall。
+
+多周期单元（乘除法器）也遵循同样原则：内部忙时暴露 is_busy/busy_rd/busy_uop_id 作为等待源。
+
+## RISC-V 测试程序分类
+
+- `rv32ui/um/ua/uc/uf/ud`：指令集扩展的模块化测试（u 前缀表示非特权指令，任何模式下行为一致）
+- `rv32mi`：M 模式特有行为（CSR、异常处理、mret/wfi）
+- `rv32si`：S 模式特有行为（虚存、页表、sfence.vma）
+- U 模式验证藏在 mi 的权限违规测试中，不需要独立测试目录
+
+开发顺序：先跑通 rv32ui → rv32mi → 再考虑 U/S 模式支持。
+
 ## 踩坑记录
 
 - char-test.c 不加 -O2 时 gcc 生成函数序言，sp 未初始化导致 store 到非法地址，AXI 总线挂死
 - verilator 需要 --autoflush 才能让 $write 无换行时也刷新 stdout
 - **IFU/LSU 共享 AXI4 端口死锁**：IFU 和 LSU 共享同一个 AXI4 master（同 ID=0），当 LSU 发起 load 时，IFU 的预取 R 响应可能排在前面，但 IFU 的 `r.ready` 依赖下游 `io.out.ready`，而流水线被 LSU 阻塞 → 死锁环路。解决方案：
   1. IFU 加 `inst_queue`（Queue, 深度4）缓冲 R 通道响应，`r.ready` 只看 queue 是否满，不依赖下游
-  2. IFU 用 id=0，LSU 用 id=1，顶层根据 `r.bits.id` 路由 R 响应（替代 r_source_queue FIFO 跟踪方案）
+  2. IFU 用 id=0，LSU 用 id=1，顶层根据 `r.bits.id` 路由 R 响应
+- NEMU 编译 .so：必须 menuconfig 选 TARGET_SHARE，且用 `tools/kconfig/build/conf --syncconfig Kconfig` 更新 autoconf.h（仅改 .config 不够）
+- NEMU filelist.mk 中 CONFIG_TARGET_NATIVE_ELF 会加 -pie 覆盖 -shared，导致产物是 PIE 而非 .so
+- NPC CSR mstatus 初始值必须为 0x1800（MPP=Machine），与 NEMU 一致
+- NPC debug_csr 顺序 [0]=mcause [1]=mepc [2]=mstatus [3]=mtvec；NEMU CSR struct { mtvec, mepc, mstatus, mcause }

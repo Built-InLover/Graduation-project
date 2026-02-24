@@ -12,9 +12,8 @@
 !*.cc
 !.gitignore
 !.scalafmt.conf
-!README.md
-!tips.md
-!soc_tips.md
+!CLAUDE.md
+!projectTips.md
 !picturecode.md
 !build.sc
 build/
