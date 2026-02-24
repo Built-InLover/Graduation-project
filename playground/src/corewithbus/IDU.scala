@@ -29,6 +29,7 @@ class IDU extends Module with HasInstrType {
       val isJump = Bool()
       val useImm = Bool()
       val uop_id = UInt(4.W) // [新增] 指令身份证
+      val exception = Valid(UInt(32.W)) // valid=有异常, bits=mcause
     })
     // 3. 数据冒险处理接口
     val forward_in = Input(Vec(8, new ForwardingBus))  // 旁路信号输入
@@ -126,18 +127,22 @@ class IDU extends Module with HasInstrType {
   io.out.bits.uop_id := uop_counter
   io.out.bits.src1   := src1_out
   io.out.bits.src2   := src2_out
-  io.out.bits.imm    := Mux(ifu_fault, 2.U, final_imm) // fault → imm=2 作为 inst_access_fault 标记
-  io.out.bits.fuType := Mux(ifu_fault, FuType.csr, fuType)
-  io.out.bits.fuOp   := Mux(ifu_fault, CSROpType.jmp, fuOp)
+  io.out.bits.imm    := final_imm
+  io.out.bits.fuType := Mux(ifu_fault, FuType.alu, fuType) // fault 走 ALU 路径（EXU→WBU，不进 LSU）
+  io.out.bits.fuOp   := Mux(ifu_fault, ALUOpType.add, fuOp)
   io.out.bits.rdAddr := Mux(ifu_fault, 0.U, rd_addr)
   io.out.bits.rfWen  := Mux(ifu_fault, false.B, isrfWen(instrType))
-  
-  // 辅助位
+
+  // 异常字段
+  io.out.bits.exception.valid := ifu_fault
+  io.out.bits.exception.bits  := CauseCode.INST_ACCESS_FAULT
+
+  // 辅助位：fault 时全部置 false，防止进入 LSU/Branch 路径
   io.out.bits.isLoad   := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
   io.out.bits.isStore  := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
   io.out.bits.isBranch := !ifu_fault && (fuType === FuType.bru) && (instrType === InstrB)
   io.out.bits.isJump   := !ifu_fault && (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
-  io.out.bits.useImm   := ifu_fault || (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
+  io.out.bits.useImm   := (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
 
   // ==================================================================
   //                5. 握手

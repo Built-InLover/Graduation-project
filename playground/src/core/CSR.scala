@@ -49,6 +49,13 @@ class CSRUnit extends Module {
     })
 
     val debug_csr   = Output(Vec(4, UInt(32.W)))
+
+    // 异常注入端口（来自 WBU commit 点）
+    val exc_in = Flipped(Valid(new Bundle {
+      val cause = UInt(32.W)
+      val pc    = UInt(32.W)
+    }))
+    val mtvec_out = Output(UInt(32.W))
   })
 
   // ==================================================================
@@ -81,9 +88,8 @@ class CSRUnit extends Module {
   val is_ebreak = is_jmp && io.in.bits.imm === 1.U
   val is_ecall = is_jmp && io.in.bits.imm === 0.U
   val is_mret  = is_jmp && io.in.bits.imm === 0x302.U
-  val is_inst_access_fault = is_jmp && io.in.bits.imm === 2.U
 
-  val is_trap   = is_ecall || is_ebreak || is_inst_access_fault
+  val is_trap   = is_ecall || is_ebreak
   
   // 当前特权级 (暂时写死 Machine Mode，后续可扩展)
   val currentPriv = PrivilegeLevel.PRV_M
@@ -121,8 +127,6 @@ class CSRUnit extends Module {
       // 2. 更新 MCAUSE
       when(is_ebreak) {
         reg_mcause := CauseCode.BREAKPOINT
-      } .elsewhen(is_inst_access_fault) {
-        reg_mcause := CauseCode.INST_ACCESS_FAULT
       } .otherwise {
         // ECALL 根据当前特权级区分
         reg_mcause := MuxCase(CauseCode.ENVCALL_M, Seq(
@@ -153,8 +157,16 @@ class CSRUnit extends Module {
     }
   }
 
-  // ==================================================================
-  // 5. 输出逻辑
+  // 异常注入（来自 WBU commit 点，优先级高于正常 CSR 指令）
+  // 两者不会同时发生：异常指令不是 CSR 指令
+  when(io.exc_in.valid) {
+    reg_mcause  := io.exc_in.bits.cause
+    reg_mepc    := io.exc_in.bits.pc
+    val mpie = (reg_mstatus & 0x8.U) << 4
+    reg_mstatus := (reg_mstatus & ~0x1888.U(32.W)) | mpie | 0x1800.U
+  }
+
+  io.mtvec_out := reg_mtvec
   // ==================================================================
   
   // 握手直接透传

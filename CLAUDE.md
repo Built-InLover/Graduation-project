@@ -17,9 +17,12 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：DiffTest 恢复 + Access Fault 异常
+## 当前状态：异常统一在 WBU commit 点处理
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 和 fib 通过 DiffTest 对拍。IFU 侧 Access Fault 已实现（AXI resp 非零时触发 trap）。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 和 fib 通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+
+## 开发规则
+- **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
 
 ## 已完成的工作
 
@@ -104,15 +107,16 @@ cd sim_soc && make verilog
   - `nemu/src/memory/paddr.c` — TARGET_SHARE 下添加 MROM(0x20000000,4KB) + SRAM(0x0f000000,8KB)
   - `nemu/src/isa/riscv32/init.c` — TARGET_SHARE 下 PC=0x20000000，跳过内置镜像
 
-### 10. Access Fault 异常
-- `essentials/const.scala` — CauseCode 新增 INST_ACCESS_FAULT(1), LOAD_ACCESS_FAULT(5), STORE_ACCESS_FAULT(7)
+### 10. 异常处理机制（统一 WBU commit 点）
+- 架构：IFU(fault) → IDU(exception) → EXU(透传) → WBU(检测) → CSR(exc_in注入) → mtvec redirect + flush_all
+- `corewithbus/IDU.scala` — out bundle 新增 `exception: Valid(UInt(32.W))`，fault 时走 ALU 空路径（不再伪装 CSR jmp）
+- `corewithbus/EXU.scala` — in/wbuOut 透传 exception；新增 `exc_in`/`mtvec_out` IO 暴露 CSR 异常注入端口
+- `core/CSR.scala` — 新增 `exc_in` 端口（写 mcause/mepc/mstatus）和 `mtvec_out` 输出；移除旧 `is_inst_access_fault` 逻辑
+- `corewithbus/WBU.scala` — 检测 EXU exception 和 LSU fault，输出 `exc_valid`/`exc_cause`/`exc_pc`；异常时抑制寄存器写回
+- `top/top.scala` — WBU→CSR 异常连线，WBU 异常 redirect 优先于 EXU 跳转，`flush_all` 冲刷全流水线 + order_q
+- `essentials/const.scala` — CauseCode: INST_ACCESS_FAULT(1), LOAD_ACCESS_FAULT(5), STORE_ACCESS_FAULT(7)
 - `corewithbus/IFU.scala` — inst_queue 存 (data, fault) 对，fault = r.resp =/= 0
-  - IFU out 端口新增 fault 字段
-- `corewithbus/IDU.scala` — 接收 fault，fault 时覆盖为 CSR jmp（imm=2 标记 inst_access_fault）
-- `core/CSR.scala` — 识别 imm=2 为 inst_access_fault，写 mcause=1，跳转 mtvec
-  - mstatus 初始值改为 0x1800（MPP=Machine）
-- `corewithbus/LSU.scala` — out 端口新增 fault 字段（resp 检测），暂未接入 trap 路径
-- `corewithbus/WBU.scala` — lsuIn 端口新增 fault 字段
+- `corewithbus/LSU.scala` — out 端口 fault 字段（resp 检测），已接入 WBU 异常路径
 
 ## 编译与运行
 ```bash
@@ -140,7 +144,6 @@ cd sim_soc && make char-test.bin && make run
 ## 下一步待办
 1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
 2. 跑通更多 cpu-tests（带 DiffTest）
-3. LSU Access Fault 接入 trap 路径（当前仅输出 fault 信号，未触发异常）
 
 ## 开发历程
 
@@ -157,6 +160,7 @@ cd sim_soc && make char-test.bin && make run
 11. IFU/LSU 共享端口死锁修复（inst_queue + ID 路由）
 12. AM 运行时 riscv32im-ysyxsoc，dummy/fib 通过
 13. DiffTest 恢复（DPI-C 方案），Access Fault 异常（IFU 侧）
+14. 异常机制重构：统一 WBU commit 点处理，移除 IDU 伪装 CSR jmp，LSU fault 接入 trap 路径
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

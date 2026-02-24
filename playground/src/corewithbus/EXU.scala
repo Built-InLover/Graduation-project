@@ -13,8 +13,8 @@ class EXU extends Module with HasInstrType {
       val src1     = UInt(32.W)
       val src2     = UInt(32.W)
       val imm      = UInt(32.W)
-      val fuType   = FuType()    
-      val fuOp     = FuOpType()  
+      val fuType   = FuType()
+      val fuOp     = FuOpType()
       val rfWen    = Bool()
       val rdAddr   = UInt(5.W)
       val isLoad   = Bool()
@@ -23,6 +23,7 @@ class EXU extends Module with HasInstrType {
       val isJump   = Bool()
       val useImm   = Bool()
       val uop_id   = UInt(4.W)
+      val exception = Valid(UInt(32.W))
     }))
 
     val lsuOut = Decoupled(new Bundle {
@@ -37,11 +38,12 @@ class EXU extends Module with HasInstrType {
 
     val wbuOut = Decoupled(new Bundle {
       val pc     = UInt(32.W)
-      val dnpc   = UInt(32.W) 
+      val dnpc   = UInt(32.W)
       val data   = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
-      val uop_id = UInt(4.W) 
+      val uop_id = UInt(4.W)
+      val exception = Valid(UInt(32.W))
     })
 
     val redirect = Valid(new Bundle {
@@ -58,6 +60,13 @@ class EXU extends Module with HasInstrType {
     }))
 
     val rob_empty = Input(Bool())
+
+    // 异常注入端口（WBU commit 点 → CSR）
+    val exc_in = Flipped(Valid(new Bundle {
+      val cause = UInt(32.W)
+      val pc    = UInt(32.W)
+    }))
+    val mtvec_out = Output(UInt(32.W))
   })
 
   // =======================================================
@@ -164,6 +173,10 @@ class EXU extends Module with HasInstrType {
   csr.io.in.bits.pc    := io.in.bits.pc
   io.debug_csr          := csr.io.debug_csr
 
+  // CSR 异常注入端口连线
+  csr.io.exc_in    <> io.exc_in
+  io.mtvec_out     := csr.io.mtvec_out
+
   // =======================================================
   // 3. 结果仲裁 (Arbitration)
   // =======================================================
@@ -266,6 +279,9 @@ class EXU extends Module with HasInstrType {
   io.wbuOut.bits.rdAddr := wbu_rd
   io.wbuOut.bits.rfWen  := wbu_wen
   io.wbuOut.bits.uop_id := wbu_id
+
+  // 透传 exception：异常指令走 ALU 路径，直接传递到 WBU
+  io.wbuOut.bits.exception := io.in.bits.exception
 
   // LSU Valid
   // 必须加 !isCsrRaw，防止 CSR 指令误入 LSU

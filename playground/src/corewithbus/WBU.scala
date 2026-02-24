@@ -2,6 +2,7 @@ package corewithbus
 
 import chisel3._
 import chisel3.util._
+import essentials._
 
 class WBU extends Module {
   val io = IO(new Bundle {
@@ -15,7 +16,8 @@ class WBU extends Module {
       val data   = UInt(32.W)
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
-      val uop_id = UInt(4.W) // [新增] 指令身份证
+      val uop_id = UInt(4.W)
+      val exception = Valid(UInt(32.W))
     }))
     // 来自 LSU 的指令 (Load/Store)
     val lsuIn = Flipped(Decoupled(new Bundle {
@@ -30,10 +32,9 @@ class WBU extends Module {
     // ---------------------------------------------------------
     // 2. 控制信号输入 (Arbitration)
     // ---------------------------------------------------------
-    // 接收 Order Queue (ROB Lite) 的令牌信号
-    val next_is_lsu = Input(Bool()) // 令牌指示: true=LSU, false=EXU
-    val token_valid = Input(Bool()) // 令牌队列非空指示
-    val token_pop   = Output(Bool())// 申请弹出队首令牌
+    val next_is_lsu = Input(Bool())
+    val token_valid = Input(Bool())
+    val token_pop   = Output(Bool())
     // ---------------------------------------------------------
     // 3. 寄存器堆写接口 (Write Back)
     // ---------------------------------------------------------
@@ -41,7 +42,13 @@ class WBU extends Module {
     val rf_waddr = Output(UInt(5.W))
     val rf_wdata = Output(UInt(32.W))
     // ---------------------------------------------------------
-    // 4. 调试接口 (Difftest / DPI)
+    // 4. 异常输出 (Exception Output)
+    // ---------------------------------------------------------
+    val exc_valid = Output(Bool())
+    val exc_cause = Output(UInt(32.W))
+    val exc_pc    = Output(UInt(32.W))
+    // ---------------------------------------------------------
+    // 5. 调试接口 (Difftest / DPI)
     // ---------------------------------------------------------
     val debug_pc   = Output(UInt(32.W))
     val debug_dnpc = Output(UInt(32.W))
@@ -68,6 +75,19 @@ class WBU extends Module {
   val exu_fire = io.exuIn.fire
   // 任意一方握手成功，即视为有一条指令完成退休
   val inst_commit = lsu_fire || exu_fire
+
+  // ------------------------------------------------------------------
+  // [2.5] 异常检测 (Exception Detection)
+  // ------------------------------------------------------------------
+  val exu_exc = exu_fire && io.exuIn.bits.exception.valid
+  val lsu_exc = lsu_fire && io.lsuIn.bits.fault
+  val has_exc = exu_exc || lsu_exc
+
+  io.exc_valid := has_exc
+  io.exc_pc    := Mux(lsu_fire, io.lsuIn.bits.pc, io.exuIn.bits.pc)
+  io.exc_cause := Mux(lsu_exc,
+    Mux(io.lsuIn.bits.rfWen, CauseCode.LOAD_ACCESS_FAULT, CauseCode.STORE_ACCESS_FAULT),
+    io.exuIn.bits.exception.bits)
   // ------------------------------------------------------------------
   // [3] 令牌管理 (Token Management)
   // ------------------------------------------------------------------
@@ -80,8 +100,8 @@ class WBU extends Module {
   val final_rf_wen   = Mux(lsu_fire, io.lsuIn.bits.rfWen,  io.exuIn.bits.rfWen)
   val final_rf_waddr = Mux(lsu_fire, io.lsuIn.bits.rdAddr, io.exuIn.bits.rdAddr)
   val final_rf_wdata = Mux(lsu_fire, io.lsuIn.bits.rdata,  io.exuIn.bits.data)
-  // 最终写使能：必须 Commit + 指令请求写回 + 目标不是 x0
-  io.rf_wen   := inst_commit && final_rf_wen && (final_rf_waddr =/= 0.U)
+  // 最终写使能：必须 Commit + 无异常 + 指令请求写回 + 目标不是 x0
+  io.rf_wen   := inst_commit && !has_exc && final_rf_wen && (final_rf_waddr =/= 0.U)
   io.rf_waddr := final_rf_waddr
   io.rf_wdata := final_rf_wdata
   // ------------------------------------------------------------------

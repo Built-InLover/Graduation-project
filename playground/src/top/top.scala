@@ -94,14 +94,27 @@ class DistributedCore extends Module {
   // ==================================================================
   //                        4. 冲刷逻辑 (Flush Logic)
   // ==================================================================
-  // 当发生跳转时，IFU 的旧指令（预测失败路径）必须被清除
-  // 注意：LSU 和 WBU 里的指令是合法的，不能被冲刷！
-  
-  ifu_idu_q.reset := reset.asBool || idu.io.flush
-  
-  // 控制流反馈
-  ifu.io.redirect := exu.io.redirect
-  idu.io.flush    := exu.io.redirect.valid 
+  // flush_all: WBU 异常时冲刷全流水线 + order_q
+  val flush_all = wbu.io.exc_valid
+
+  ifu_idu_q.reset := reset.asBool || idu.io.flush || flush_all
+  idu_exu_q.reset := reset.asBool || flush_all
+  exu_wbu_q.reset := reset.asBool || flush_all
+  exu_lsu_q.reset := reset.asBool || flush_all
+  lsu_wbu_q.reset := reset.asBool || flush_all
+
+  // 异常连线：WBU → CSR（通过 EXU 暴露的端口）
+  exu.io.exc_in.valid      := wbu.io.exc_valid
+  exu.io.exc_in.bits.cause := wbu.io.exc_cause
+  exu.io.exc_in.bits.pc    := wbu.io.exc_pc
+
+  // redirect 合并：WBU 异常优先级 > EXU 跳转
+  val wbu_exc_redirect = wbu.io.exc_valid
+  ifu.io.redirect.valid         := wbu_exc_redirect || exu.io.redirect.valid
+  ifu.io.redirect.bits.targetPC := Mux(wbu_exc_redirect, exu.io.mtvec_out, exu.io.redirect.bits.targetPC)
+
+  // IDU flush 包含 EXU redirect 和 WBU 异常
+  idu.io.flush := exu.io.redirect.valid || flush_all
 
   // ==================================================================
   //                        5. 顺序令牌队列 (Order Queue / ROB Lite)
@@ -120,8 +133,8 @@ class DistributedCore extends Module {
   order_q.io.enq.bits  := is_lsu
 
   // 2. 复位逻辑
-  // 关键：令牌队列只受全局 Reset 控制，跳转时不清空！
-  order_q.reset := reset.asBool
+  // 全局 Reset 或 WBU 异常时清空令牌队列
+  order_q.reset := reset.asBool || flush_all
 
   // 3. 出队 (Deq): 谁来查账本？
   wbu.io.next_is_lsu   := order_q.io.deq.bits
