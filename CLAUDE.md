@@ -115,8 +115,8 @@ cd sim_soc && make verilog
 - `corewithbus/WBU.scala` — 检测 EXU exception 和 LSU fault，输出 `exc_valid`/`exc_cause`/`exc_pc`；异常时抑制寄存器写回
 - `top/top.scala` — WBU→CSR 异常连线，WBU 异常 redirect 优先于 EXU 跳转，`flush_all` 冲刷全流水线 + order_q
 - `essentials/const.scala` — CauseCode: INST_ACCESS_FAULT(1), LOAD_ACCESS_FAULT(5), STORE_ACCESS_FAULT(7)
-- `corewithbus/IFU.scala` — inst_queue 存 (data, fault) 对，fault = r.resp =/= 0
-- `corewithbus/LSU.scala` — out 端口 fault 字段（resp 检测），已接入 WBU 异常路径
+- `corewithbus/IFU.scala` — inst_queue 存 (data, exception) 对，exception = r.resp =/= 0
+- `corewithbus/LSU.scala` — out 端口 exception 字段（resp 检测），已接入 WBU 异常路径
 
 ## 编译与运行
 ```bash

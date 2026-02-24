@@ -27,7 +27,7 @@ class WBU extends Module {
       val rdAddr = UInt(5.W)
       val rfWen  = Bool()
       val uop_id = UInt(4.W)
-      val fault  = Bool()
+      val exception  = Bool()
     }))
     // ---------------------------------------------------------
     // 2. 控制信号输入 (Arbitration)
@@ -80,7 +80,7 @@ class WBU extends Module {
   // [2.5] 异常检测 (Exception Detection)
   // ------------------------------------------------------------------
   val exu_exc = exu_fire && io.exuIn.bits.exception.valid
-  val lsu_exc = lsu_fire && io.lsuIn.bits.fault
+  val lsu_exc = lsu_fire && io.lsuIn.bits.exception
   val has_exc = exu_exc || lsu_exc
 
   io.exc_valid := has_exc

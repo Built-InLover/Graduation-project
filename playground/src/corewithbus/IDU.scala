@@ -11,7 +11,7 @@ class IDU extends Module with HasInstrType {
     val in = Flipped(Decoupled(new Bundle {
       val inst  = UInt(32.W)
       val pc    = UInt(32.W)
-      val fault = Bool()
+      val exception = Bool()
     }))
     // 2. 解耦输出接口 (发往 EXU)
     val out = Decoupled(new Bundle {
@@ -121,27 +121,27 @@ class IDU extends Module with HasInstrType {
   // ==================================================================
   //                4. 输出赋值
   // ==================================================================
-  val ifu_fault = io.in.bits.fault
+  val ifu_exception = io.in.bits.exception
 
   io.out.bits.pc     := pc
   io.out.bits.uop_id := uop_counter
   io.out.bits.src1   := src1_out
   io.out.bits.src2   := src2_out
   io.out.bits.imm    := final_imm
-  io.out.bits.fuType := Mux(ifu_fault, FuType.alu, fuType) // fault 走 ALU 路径（EXU→WBU，不进 LSU）
-  io.out.bits.fuOp   := Mux(ifu_fault, ALUOpType.add, fuOp)
-  io.out.bits.rdAddr := Mux(ifu_fault, 0.U, rd_addr)
-  io.out.bits.rfWen  := Mux(ifu_fault, false.B, isrfWen(instrType))
+  io.out.bits.fuType := Mux(ifu_exception, FuType.alu, fuType) // fault 走 ALU 路径（EXU→WBU，不进 LSU）
+  io.out.bits.fuOp   := Mux(ifu_exception, ALUOpType.add, fuOp)
+  io.out.bits.rdAddr := Mux(ifu_exception, 0.U, rd_addr)
+  io.out.bits.rfWen  := Mux(ifu_exception, false.B, isrfWen(instrType))
 
   // 异常字段
-  io.out.bits.exception.valid := ifu_fault
+  io.out.bits.exception.valid := ifu_exception
   io.out.bits.exception.bits  := CauseCode.INST_ACCESS_FAULT
 
   // 辅助位：fault 时全部置 false，防止进入 LSU/Branch 路径
-  io.out.bits.isLoad   := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
-  io.out.bits.isStore  := !ifu_fault && (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
-  io.out.bits.isBranch := !ifu_fault && (fuType === FuType.bru) && (instrType === InstrB)
-  io.out.bits.isJump   := !ifu_fault && (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
+  io.out.bits.isLoad   := !ifu_exception && (fuType === FuType.lsu) && LSUOpType.isLoad(fuOp)
+  io.out.bits.isStore  := !ifu_exception && (fuType === FuType.lsu) && LSUOpType.isStore(fuOp)
+  io.out.bits.isBranch := !ifu_exception && (fuType === FuType.bru) && (instrType === InstrB)
+  io.out.bits.isJump   := !ifu_exception && (instrType === InstrJ || (instrType === InstrI && fuType === FuType.bru))
   io.out.bits.useImm   := (instrType === InstrI || instrType === InstrS || instrType === InstrU || instrType === InstrJ)
 
   // ==================================================================

@@ -10,7 +10,7 @@ class IFU extends Module {
     val out = Decoupled(new Bundle {
       val inst  = UInt(32.W)
       val pc    = UInt(32.W)
-      val fault = Bool()
+      val exception = Bool()
     })
     val redirect = Flipped(Valid(new Bundle {
       val targetPC = UInt(32.W)
@@ -66,14 +66,14 @@ class IFU extends Module {
   // ==================================================================
   val inst_queue = Module(new Queue(new Bundle {
     val data  = UInt(32.W)
-    val fault = Bool()
+    val exception = Bool()
   }, pipelineDepth, pipe = true))
 
   // R 通道 ready 只看 inst_queue 是否能入队，不依赖下游流水线
   io.bus.r.ready := inst_queue.io.enq.ready
   inst_queue.io.enq.valid      := io.bus.r.valid
   inst_queue.io.enq.bits.data  := io.bus.r.bits.data
-  inst_queue.io.enq.bits.fault := io.bus.r.bits.resp =/= 0.U
+  inst_queue.io.enq.bits.exception := io.bus.r.bits.resp =/= 0.U
 
   // ==================================================================
   //                        4. inst_queue + meta_queue 同步出队
@@ -89,5 +89,5 @@ class IFU extends Module {
   io.out.valid      := both_valid && is_valid_inst
   io.out.bits.inst  := inst_queue.io.deq.bits.data
   io.out.bits.pc    := meta_queue.io.deq.bits.pc
-  io.out.bits.fault := inst_queue.io.deq.bits.fault
+  io.out.bits.exception := inst_queue.io.deq.bits.exception
 }
