@@ -32,8 +32,7 @@ SECTIONS {
     _bss_end = .;
   } > SRAM
 
-  _stack_top = ALIGN(0x1000);
-  . = _stack_top + 0x1000;
-  _stack_pointer = .;
   _heap_start = .;
+  _stack_top = ORIGIN(SRAM) + LENGTH(SRAM) - 0x1000;
+  _stack_pointer = ORIGIN(SRAM) + LENGTH(SRAM);
 }

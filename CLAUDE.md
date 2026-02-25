@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：异常统一在 WBU commit 点处理
+## 当前状态：mem-test 通过，SRAM 8/16/32 位访存验证完成
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy 和 fib 通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy、fib、mem-test 通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -119,6 +119,12 @@ cd sim_soc && make verilog
 - `corewithbus/IFU.scala` — inst_queue 存 (data, exception) 对，exception = r.resp =/= 0
 - `corewithbus/LSU.scala` — out 端口 exception 字段（resp 检测），已接入 WBU 异常路径
 
+### 11. mem-test 内存访问测试
+- `am/src/riscv/ysyxsoc/linker.ld` — 调整布局：栈移到 SRAM 末尾(4KB)，堆在 .bss 和栈之间
+  - 新布局：.data/.bss → _heap_start → 堆区 → _stack_top(0x0f001000) → 栈(4KB) → _stack_pointer(0x0f002000)
+- `am/src/riscv/ysyxsoc/trm.c` — heap 范围改用 linker 符号 (_heap_start, _stack_top)，移除硬编码 SRAM_END
+- `am-kernels/tests/cpu-tests/tests/mem-test.c` — 堆区 8/16/32 位写入-读回校验，DiffTest 通过
+
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -146,6 +152,10 @@ cd sim_soc && make char-test.bin && make run
 1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
 2. 跑通更多 cpu-tests（带 DiffTest）
 
+## 未来优化点（功能稳定后再做）
+- **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
+- **CSR 序列化放宽**：当前所有 CSR 类指令统一要求 `rob_empty && !mdu_locked`，实际只有 jmp 类（ECALL/EBREAK/MRET）需要序列化，普通 CSRRW/CSRRS/CSRRC 可以放宽
+
 ## 开发历程
 
 1. 五级流水线基础架构（IFU/IDU/EXU/LSU/WBU），内部异步总线，DPI-C 虚拟内存
@@ -162,6 +172,7 @@ cd sim_soc && make char-test.bin && make run
 12. AM 运行时 riscv32im-ysyxsoc，dummy/fib 通过
 13. DiffTest 恢复（DPI-C 方案），Access Fault 异常（IFU 侧）
 14. 异常机制重构：统一 WBU commit 点处理，移除 IDU 伪装 CSR jmp，LSU fault 接入 trap 路径
+15. mem-test：linker.ld 布局调整（栈移末尾、堆可用），SRAM 8/16/32 位访存校验通过 DiffTest
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

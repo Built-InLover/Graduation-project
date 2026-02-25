@@ -2,12 +2,12 @@
 #include <klib-macros.h>
 
 extern char _heap_start;
+extern char _stack_top;
 int main(const char *args);
 
 #define UART_BASE 0x10000000
-#define SRAM_END  0x0f002000
 
-Area heap = RANGE(&_heap_start, SRAM_END);
+Area heap = RANGE(&_heap_start, &_stack_top);
 
 void putch(char ch) {
   *(volatile char *)UART_BASE = ch;
