@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：cpu-tests 35/35 全部通过 DiffTest
+## 当前状态：cpu-tests 36/36 全部通过 DiffTest（含 UART 初始化）
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 35 个测试通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 36 个测试通过 DiffTest 对拍。UART16550 已正确初始化（8N1, divisor=1），putch() 轮询 LSR THRE 位后写入 THR。NEMU 侧 TARGET_SHARE 已添加 UART 地址映射（LSR 返回 0x60）。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -126,6 +126,10 @@ cd sim_soc && make verilog
 - `am/src/riscv/ysyxsoc/trm.c` — heap 范围改用 linker 符号 (_heap_start, _stack_top)，移除硬编码 SRAM_END
 - `am-kernels/tests/cpu-tests/tests/mem-test.c` — 堆区 8/16/32 位写入-读回校验，DiffTest 通过
 
+### 12. UART16550 初始化 + putch() 轮询
+- `am/src/riscv/ysyxsoc/trm.c` — uart_init()：DLAB=1 设 divisor=1，DLAB=0 设 8N1；putch() 轮询 LSR[5](THRE) 后写 THR；_trm_init() 调用 uart_init()
+- `nemu/src/memory/paddr.c` — TARGET_SHARE 分支添加 UART 地址范围(0x10000000, 8B)：读 LSR 返回 0x60(THRE+TEMT)，其余返回 0；写静默忽略
+
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -174,6 +178,7 @@ cd sim_soc && make char-test.bin && make run
 14. 异常机制重构：统一 WBU commit 点处理，移除 IDU 伪装 CSR jmp，LSU fault 接入 trap 路径
 15. mem-test：linker.ld 布局调整（栈移末尾、堆可用），SRAM 8/16/32 位访存校验通过 DiffTest
 16. mrom_read 地址对齐修复：DPI-C 未对齐到 4 字节边界导致 lbu 从 MROM 读错字节，string/crc32 DiffTest 失败。修复后 cpu-tests 35/35 全部通过
+17. UART16550 初始化 + putch() 轮询：uart_init() 设 8N1/divisor=1，putch() 轮询 LSR THRE；NEMU 侧添加 UART 地址映射。cpu-tests 36/36 全部通过 DiffTest
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
