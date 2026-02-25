@@ -24,6 +24,7 @@ CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM �
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
 - **Git 提交**：commit 后顺手 push
+- **linker.ld 内存布局注释**：每次修改 linker.ld 时，同步更新文件顶部的 ASCII 内存布局图
 
 ## 已完成的工作
 
