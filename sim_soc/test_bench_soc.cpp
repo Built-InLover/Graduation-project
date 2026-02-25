@@ -13,7 +13,7 @@
 #endif
 
 #ifndef MAX_CYCLES
-#define MAX_CYCLES 10000
+#define MAX_CYCLES 1000000
 #endif
 
 // MROM 缓冲区（4KB，与硬件一致）
@@ -22,7 +22,8 @@ static uint8_t mrom_data[4096];
 // DPI-C 桩函数（ysyxSoC 外设需要）
 extern "C" void flash_read(int32_t addr, int32_t *data) { assert(0); }
 extern "C" void mrom_read(int32_t addr, int32_t *data) {
-    uint32_t offset = (uint32_t)addr - 0x20000000;
+    // 对齐到 4 字节边界：MROM 硬件返回整个 word，由 master 侧按 addr[1:0] 提取字节
+    uint32_t offset = ((uint32_t)addr - 0x20000000) & ~0x3u;
     if (offset + 4 <= sizeof(mrom_data)) {
         memcpy(data, mrom_data + offset, 4);
     } else {
@@ -105,6 +106,21 @@ static bool difftest_check() {
     if (ref_cpu.csr.mtvec != npc_cpu.csr.mtvec) {
         printf("[difftest] mtvec mismatch: ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mtvec, npc_cpu.csr.mtvec);
         pass = false;
+    }
+    if (!pass) {
+        printf("[difftest] === Full GPR Dump ===\n");
+        for (int i = 0; i < 32; i++) {
+            printf("  x%-2d(%-4s): ref=0x%08x npc=0x%08x %s\n",
+                   i, reg_names[i], ref_cpu.gpr[i], npc_cpu.gpr[i],
+                   (ref_cpu.gpr[i] != npc_cpu.gpr[i]) ? "<< MISMATCH" : "");
+        }
+        printf("  PC       : ref=0x%08x npc=0x%08x %s\n",
+               ref_cpu.pc, npc_cpu.pc,
+               (ref_cpu.pc != npc_cpu.pc) ? "<< MISMATCH" : "");
+        printf("  mcause   : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mcause, npc_cpu.csr.mcause);
+        printf("  mepc     : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mepc, npc_cpu.csr.mepc);
+        printf("  mstatus  : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mstatus, npc_cpu.csr.mstatus);
+        printf("  mtvec    : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mtvec, npc_cpu.csr.mtvec);
     }
     difftest_commit = false;
     return pass;

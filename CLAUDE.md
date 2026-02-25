@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：mem-test 通过，SRAM 8/16/32 位访存验证完成
+## 当前状态：cpu-tests 35/35 全部通过 DiffTest
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。dummy、fib、mem-test 通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 35 个测试通过 DiffTest 对拍。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -151,7 +151,6 @@ cd sim_soc && make char-test.bin && make run
 
 ## 下一步待办
 1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
-2. 跑通更多 cpu-tests（带 DiffTest）
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -174,6 +173,7 @@ cd sim_soc && make char-test.bin && make run
 13. DiffTest 恢复（DPI-C 方案），Access Fault 异常（IFU 侧）
 14. 异常机制重构：统一 WBU commit 点处理，移除 IDU 伪装 CSR jmp，LSU fault 接入 trap 路径
 15. mem-test：linker.ld 布局调整（栈移末尾、堆可用），SRAM 8/16/32 位访存校验通过 DiffTest
+16. mrom_read 地址对齐修复：DPI-C 未对齐到 4 字节边界导致 lbu 从 MROM 读错字节，string/crc32 DiffTest 失败。修复后 cpu-tests 35/35 全部通过
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
