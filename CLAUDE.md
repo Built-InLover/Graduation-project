@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：SPI 真实协议 + Flash 启动
+## 当前状态：XIP Flash 执行
 
-FAST_FLASH 已关闭，改用真实 SPI 协议驱动 flash 读取。bitrev SPI slave 模块已实现并通过测试。spi-flash-test 通过软件驱动 SPI master 读取 flash 256 个 word 校验通过。flash-loader 从 MROM 启动，通过 SPI 读 flash 到 SRAM 并跳转执行 char-test-sram，输出 'A\n' 后 ebreak 退出。NEMU 侧添加 SPI 寄存器地址映射（读返回 0，写忽略）。cpu-tests 37/37 DiffTest 回归需临时开 FAST_FLASH。
+在真实 SPI 协议基础上实现了 XIP（Execute In Place）硬件状态机。CPU 访问 0x30000000 地址空间时，spi_top_apb.v 内部状态机自动完成 SPI 传输（8 states: IDLE→WR_TX1→WR_TX0→WR_SS→WR_CTRL→POLL→RD_RX0→DONE），对 CPU 透明。xip-flash-test 256 word 校验通过，xip-jump 从 MROM 跳转到 flash 执行 char-test-flash 输出 'A\n' + ebreak 成功。软件驱动 SPI 和 XIP 硬件状态机共存：SPI 寄存器访问（0x10001000）走 APB 直连，flash 地址访问（0x30000000）走 XIP 状态机。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -137,7 +137,7 @@ cd sim_soc && make verilog
 - `nemu/src/memory/paddr.c` — Flash 地址映射保留
 - `am-kernels/tests/cpu-tests/tests/flash-test.c` — 旧测试（需 FAST_FLASH 才能运行）
 
-### 14. bitrev SPI slave 模块
+### 14. bitrev SPI slave 模块 纯测试练手模块，本身与FLASH毫无关系
 - `ysyxSoC/perip/bitrev/bitrev.v` — 位翻转 SPI slave：接收 8 bit → 位翻转 → 发送 8 bit（总 16 bit）
   - MSB first，posedge sck 采样/输出，SS 低有效，空闲 MISO=1
   - SoC 中连接在 SPI SS[7]
@@ -146,7 +146,7 @@ cd sim_soc && make verilog
 ### 15. 软件驱动 SPI Flash 读取
 - `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — 注释 `FAST_FLASH`，启用真实 SPI master（spi_top）
 - `am-kernels/tests/cpu-tests/tests/spi-flash-test.c` — 64-bit SPI 传输（8 cmd + 24 addr + 32 data）
-  - TX_1 = {0x03, addr[23:0]}，TX_0 = 0（dummy），CHAR_LEN=64
+  - TX_1 = {0x03, addr[23:0]}，TX_0 = 0（dummy），CHAR_LEN=64 #dummy指的是无意义的数据，因为SPI只工作在全双工，所以此时接受也必须发送
   - flash.v 内部 data_bswap，软件需 bswap32(RX_0) 还原
   - 读 256 个 word 校验已知模式通过
 - `nemu/src/memory/paddr.c` — 添加 SPI 寄存器地址范围(0x10001000, 0x1000)：读返回 0（GO=0），写忽略
@@ -158,6 +158,19 @@ cd sim_soc && make verilog
 - `sim_soc/sram.ld` — SRAM 链接脚本（起始 0x0f000000）
 - `sim_soc/test_bench_soc.cpp` — init_flash 支持文件加载（argv[3]），无文件时用默认已知模式
 - `sim_soc/Makefile` — 新增 flash-loader.bin、char-test-sram.bin 目标；run 支持 FLASH= 参数
+
+### 17. XIP Flash（硬件状态机 + Execute In Place）
+- `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — XIP 状态机（8 states）
+  - 地址判断：`is_flash = (in_paddr >= 0x30000000) && (in_paddr <= 0x3fffffff)`
+  - 状态机：IDLE→WR_TX1→WR_TX0→WR_SS→WR_CTRL→POLL→RD_RX0→DONE
+  - Wishbone MUX：IDLE 时 APB 直连 spi_top（软件驱动 SPI 仍可用），XIP 时状态机驱动
+  - APB pready：IDLE 时来自 wb_ack，XIP 时仅在 DONE 状态为 1
+  - bswap32 还原字节序，写保护（flash 地址 + pwrite → $fatal）
+- `am-kernels/tests/cpu-tests/tests/xip-flash-test.c` — XIP 读取测试：指针直读 0x30000000，256 word 校验通过
+- `sim_soc/xip-jump.c` — MROM 程序，跳转到 0x30000000（IFU 后续取指全走 XIP）
+- `sim_soc/char-test-flash.c` — Flash 版 char-test：输出 'A\n' + ebreak，链接到 0x30000000
+- `sim_soc/flash.ld` — Flash 链接脚本（起始 0x30000000）
+- `sim_soc/Makefile` — 新增 xip-jump.bin、char-test-flash.bin 编译目标
 
 ## 编译与运行
 ```bash
@@ -188,6 +201,14 @@ make run IMG=.../spi-flash-test-riscv32im-ysyxsoc.bin
 cd sim_soc && make flash-loader.bin char-test-sram.bin
 make run IMG=flash-loader.bin FLASH=char-test-sram.bin
 
+# XIP 读取测试
+make ARCH=riscv32im-ysyxsoc ALL=xip-flash-test
+cd sim_soc && make run IMG=.../xip-flash-test-riscv32im-ysyxsoc.bin
+
+# XIP 执行测试（MROM 跳转到 flash 执行）
+cd sim_soc && make xip-jump.bin char-test-flash.bin
+make run IMG=xip-jump.bin FLASH=char-test-flash.bin
+
 # 旧的 char-test 仍可用
 cd sim_soc && make char-test.bin && make run
 
@@ -196,8 +217,8 @@ cd sim_soc && make char-test.bin && make run
 ```
 
 ## 下一步待办
-1. 将 AM 程序（cpu-tests）改为从 flash 启动（flash-loader + AM linker 适配）
-2. SPI 相关测试的 DiffTest 支持（NEMU 侧模拟 SPI 行为）
+1. 将 AM 程序（cpu-tests）改为从 flash 启动（XIP + AM linker 适配）
+2. SPI/XIP 相关测试的 DiffTest 支持（NEMU 侧模拟 SPI 行为或 flash 地址映射）
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -226,6 +247,7 @@ cd sim_soc && make char-test.bin && make run
 19. bitrev SPI slave：实现位翻转模块（接收 8bit → 翻转 → 发送 8bit），bitrev-test 通过 SPI master 驱动校验通过
 20. 软件驱动 SPI Flash：关闭 FAST_FLASH，64-bit SPI 传输（0x03 + addr + dummy），bswap32 还原字节序，spi-flash-test 256 word 校验通过。NEMU 添加 SPI 地址映射
 21. Flash 启动：flash-loader 从 MROM 执行，SPI 读 flash 到 SRAM 并跳转，char-test-sram 输出 'A\n' + ebreak 成功
+22. XIP Flash：spi_top_apb.v 实现 8 状态 XIP 硬件状态机，CPU 读 0x30000000 自动完成 SPI 传输。xip-flash-test 256 word 校验通过，xip-jump 从 MROM 跳转到 flash 执行 char-test-flash 成功
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

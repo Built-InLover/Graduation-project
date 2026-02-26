@@ -74,6 +74,14 @@ char-test-sram.bin: char-test-sram.c sram.ld
 	$(CC_RV) -nostdlib -nostartfiles -O2 -T sram.ld -march=rv32i -mabi=ilp32 -o char-test-sram.elf $<
 	$(OBJCOPY) -O binary char-test-sram.elf $@
 
+xip-jump.bin: xip-jump.c mrom.ld
+	$(CC_RV) -nostdlib -nostartfiles -O2 -T mrom.ld -march=rv32i -mabi=ilp32 -o xip-jump.elf $<
+	$(OBJCOPY) -O binary xip-jump.elf $@
+
+char-test-flash.bin: char-test-flash.c flash.ld
+	$(CC_RV) -nostdlib -nostartfiles -O2 -T flash.ld -march=rv32i -mabi=ilp32 -o char-test-flash.elf $<
+	$(OBJCOPY) -O binary char-test-flash.elf $@
+
 sim: $(VSRCS) $(CSRCS)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
