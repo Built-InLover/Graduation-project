@@ -19,8 +19,27 @@
 // MROM 缓冲区（4KB，与硬件一致）
 static uint8_t mrom_data[4096];
 
+// Flash 缓冲区（16MB）
+#define FLASH_SIZE (16 * 1024 * 1024)
+static uint8_t flash_data[FLASH_SIZE];
+
+static void init_flash() {
+    // 写入已知模式，供测试校验（NEMU 侧需写入相同模式）
+    for (unsigned i = 0; i < 256; i++) {
+        uint32_t val = 0xdeadbeef ^ (i * 0x01010101u);
+        memcpy(flash_data + i * 4, &val, 4);
+    }
+}
+
 // DPI-C 桩函数（ysyxSoC 外设需要）
-extern "C" void flash_read(int32_t addr, int32_t *data) { assert(0); }
+extern "C" void flash_read(int32_t addr, int32_t *data) {
+    uint32_t offset = (uint32_t)addr & ~0x3u;
+    if (offset + 4 <= FLASH_SIZE) {
+        memcpy(data, flash_data + offset, 4);
+    } else {
+        *data = 0;
+    }
+}
 extern "C" void mrom_read(int32_t addr, int32_t *data) {
     // 对齐到 4 字节边界：MROM 硬件返回整个 word，由 master 侧按 addr[1:0] 提取字节
     uint32_t offset = ((uint32_t)addr - 0x20000000) & ~0x3u;
@@ -201,6 +220,8 @@ int main(int argc, char **argv) {
     size_t n = fread(mrom_data, 1, sizeof(mrom_data), fp);
     fclose(fp);
     printf("Loaded %zu bytes into MROM\n", n);
+
+    init_flash();
 
 #ifdef DIFFTEST_ON
     if (diff_so) {

@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：cpu-tests 36/36 全部通过 DiffTest（含 UART 初始化）
+## 当前状态：cpu-tests 37/37 全部通过 DiffTest（含 UART + Flash）
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 36 个测试通过 DiffTest 对拍。UART16550 已正确初始化（8N1, divisor=1），putch() 轮询 LSR THRE 位后写入 THR。NEMU 侧 TARGET_SHARE 已添加 UART 地址映射（LSR 返回 0x60）。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART 和 Flash。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 37 个测试通过 DiffTest 对拍。UART16550 已正确初始化（8N1, divisor=1），putch() 轮询 LSR THRE 位后写入 THR。Flash 通过 FAST_FLASH 模式（DPI-C flash_read）实现快速读取，已知模式校验通过。NEMU 侧 TARGET_SHARE 已添加 UART + Flash 地址映射。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -68,7 +68,7 @@ cd sim_soc && make verilog
   - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
   - char-test.bin 编译目标：riscv32i 交叉编译 + objcopy，链接地址 0x20000000
 - `sim_soc/test_bench_soc.cpp` — 仿真驱动
-  - mrom_read 加载 char-test.bin 到 4KB 缓冲区，flash_read 桩函数（assert(0)）
+  - mrom_read 加载 bin 到 4KB 缓冲区，flash_read 读取 16MB flash 缓冲区（已知模式初始化）
   - DPI-C sim_ebreak() 终止机制：CSR 检测到 ebreak 后通知 testbench 退出
   - 复位 10 周期后主循环（最多 100 万周期，ebreak 提前退出）
   - FST 波形输出到 obj_dir/ysyxSoCFull.fst
@@ -130,6 +130,13 @@ cd sim_soc && make verilog
 - `am/src/riscv/ysyxsoc/trm.c` — uart_init()：DLAB=1 设 divisor=1，DLAB=0 设 8N1；putch() 轮询 LSR[5](THRE) 后写 THR；_trm_init() 调用 uart_init()
 - `nemu/src/memory/paddr.c` — TARGET_SHARE 分支添加 UART 地址范围(0x10000000, 8B)：读 LSR 返回 0x60(THRE+TEMT)，其余返回 0；写静默忽略
 
+### 13. Flash 读取（FAST_FLASH + DPI-C）
+- `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — 启用 `FAST_FLASH` 宏，绕过真实 SPI 时序，通过 DPI-C flash_read 直接读取
+  - CPU 访问 0x3000XXXX → flash_cmd 模块取 addr[23:0] 对齐到 4 字节 → flash_read(offset, data)
+- `sim_soc/test_bench_soc.cpp` — flash_read 实现：16MB flash 缓冲区，init_flash() 写入已知模式（0xdeadbeef ^ (i * 0x01010101u)）
+- `nemu/src/memory/paddr.c` — TARGET_SHARE 分支添加 Flash 地址范围(0x30000000, 16MB)，init_flash_nemu() 写入相同已知模式
+- `am-kernels/tests/cpu-tests/tests/flash-test.c` — 从 MROM 执行，读取 flash 256 个 word 校验已知模式
+
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -154,7 +161,7 @@ cd sim_soc && make char-test.bin && make run
 ```
 
 ## 下一步待办
-1. 实现 flash_read（让 CPU 能从 flash 取到指令，加载更大程序）
+1. 从 flash 启动（将程序加载到 flash 而非 MROM，支持更大程序）
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -179,6 +186,7 @@ cd sim_soc && make char-test.bin && make run
 15. mem-test：linker.ld 布局调整（栈移末尾、堆可用），SRAM 8/16/32 位访存校验通过 DiffTest
 16. mrom_read 地址对齐修复：DPI-C 未对齐到 4 字节边界导致 lbu 从 MROM 读错字节，string/crc32 DiffTest 失败。修复后 cpu-tests 35/35 全部通过
 17. UART16550 初始化 + putch() 轮询：uart_init() 设 8N1/divisor=1，putch() 轮询 LSR THRE；NEMU 侧添加 UART 地址映射。cpu-tests 36/36 全部通过 DiffTest
+18. Flash 读取：启用 FAST_FLASH 宏，实现 flash_read DPI-C（16MB 缓冲区 + 已知模式），NEMU 侧添加 flash 地址映射，flash-test 校验通过。cpu-tests 37/37 全部通过 DiffTest
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
