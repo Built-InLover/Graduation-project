@@ -66,14 +66,16 @@ cd sim_soc && make verilog
   - `verilog` 目标：mill 生成 + sed 信号名修正（一条命令完成）
   - YSYXSOC_HOME = `$(abspath ../../ysyxSoC)` （注意相对路径基于 sim_soc/）
   - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
-  - char-test.bin 编译目标：riscv32i 交叉编译 + objcopy，链接地址 0x20000000
+  - xip-jump.bin / char-test-flash.bin 编译目标
 - `sim_soc/test_bench_soc.cpp` — 仿真驱动
   - mrom_read 加载 bin 到 4KB 缓冲区，flash_read 读取 16MB flash 缓冲区（已知模式初始化）
   - DPI-C sim_ebreak() 终止机制：CSR 检测到 ebreak 后通知 testbench 退出
   - 复位 10 周期后主循环（最多 100 万周期，ebreak 提前退出）
   - FST 波形输出到 obj_dir/ysyxSoCFull.fst
-- `sim_soc/char-test.c` — 最简 UART 测试：直接写 'A' 到 UART THR (0x10000000)
-- `sim_soc/mrom.ld` — 链接脚本，起始地址 0x20000000
+- `sim_soc/xip-jump.c` — MROM 程序，跳转到 0x30000000（XIP 执行入口）
+- `sim_soc/char-test-flash.c` — Flash 版 char-test：输出 'A\n' + ebreak，链接到 0x30000000
+- `sim_soc/mrom.ld` — MROM 链接脚本（起始 0x20000000）
+- `sim_soc/flash.ld` — Flash 链接脚本（起始 0x30000000）
 
 ### 7. AM 运行时环境（riscv32im-ysyxsoc）
 - 源文件在 `am/` 目录下，`abstract-machine/` 对应位置为软链接（绝对路径）
@@ -151,13 +153,10 @@ cd sim_soc && make verilog
   - 读 256 个 word 校验已知模式通过
 - `nemu/src/memory/paddr.c` — 添加 SPI 寄存器地址范围(0x10001000, 0x1000)：读返回 0（GO=0），写忽略
 
-### 16. Flash 启动（flash-loader）
-- `sim_soc/flash-loader.c` — 从 MROM 执行，通过 SPI 读 flash 到 SRAM(0x0f000000)，跳转执行
-  - flash_read(): 64-bit SPI 传输 + bswap32，加载 4KB
-- `sim_soc/char-test-sram.c` — SRAM 版 char-test：输出 'A\n' 后 ebreak
-- `sim_soc/sram.ld` — SRAM 链接脚本（起始 0x0f000000）
-- `sim_soc/test_bench_soc.cpp` — init_flash 支持文件加载（argv[3]），无文件时用默认已知模式
-- `sim_soc/Makefile` — 新增 flash-loader.bin、char-test-sram.bin 目标；run 支持 FLASH= 参数
+### 16. Flash 启动（flash-loader）— 已被 XIP 取代，文件已删除
+- 旧方案：flash-loader.c 从 MROM 软件驱动 SPI 读 flash 到 SRAM 再跳转
+- 已删除：`flash-loader.c`、`char-test-sram.c`、`sram.ld`、`char-test.c`
+- 现在用 XIP：xip-jump(MROM) → char-test-flash(Flash 直接执行)
 
 ### 17. XIP Flash（硬件状态机 + Execute In Place）
 - `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — XIP 状态机（8 states）
@@ -197,10 +196,6 @@ make run IMG=.../bitrev-test-riscv32im-ysyxsoc.bin
 # SPI flash 读取测试（无 DiffTest）
 make run IMG=.../spi-flash-test-riscv32im-ysyxsoc.bin
 
-# flash 加载 char-test 到 SRAM 执行
-cd sim_soc && make flash-loader.bin char-test-sram.bin
-make run IMG=flash-loader.bin FLASH=char-test-sram.bin
-
 # XIP 读取测试
 make ARCH=riscv32im-ysyxsoc ALL=xip-flash-test
 cd sim_soc && make run IMG=.../xip-flash-test-riscv32im-ysyxsoc.bin
@@ -208,9 +203,6 @@ cd sim_soc && make run IMG=.../xip-flash-test-riscv32im-ysyxsoc.bin
 # XIP 执行测试（MROM 跳转到 flash 执行）
 cd sim_soc && make xip-jump.bin char-test-flash.bin
 make run IMG=xip-jump.bin FLASH=char-test-flash.bin
-
-# 旧的 char-test 仍可用
-cd sim_soc && make char-test.bin && make run
 
 # cpu-tests DiffTest 回归（需临时开 FAST_FLASH）
 # 编辑 spi_top_apb.v 取消注释 `define FAST_FLASH，重新 make sim
@@ -253,3 +245,4 @@ cd sim_soc && make char-test.bin && make run
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
 - `core/SoCTop.scala`、`core/RAM.scala`、`core/Axi4LiteUART.scala`、`core/Axi4LiteCLINT.scala` — 旧 SoC 路由和 DPI-C 虚拟外设
 - `top/main.scala` — 旧入口点（已被 main_ysyxsoc.scala 替代）
+- `sim_soc/char-test.c`、`sim_soc/char-test-sram.c`、`sim_soc/flash-loader.c`、`sim_soc/sram.ld` — 被 XIP 方案取代（xip-jump + char-test-flash）
