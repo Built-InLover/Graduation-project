@@ -66,6 +66,14 @@ char-test.bin: char-test.c mrom.ld
 	$(CC_RV) -nostdlib -nostartfiles -O2 -T mrom.ld -march=rv32i -mabi=ilp32 -o char-test.elf $<
 	$(OBJCOPY) -O binary char-test.elf $@
 
+flash-loader.bin: flash-loader.c mrom.ld
+	$(CC_RV) -nostdlib -nostartfiles -O2 -T mrom.ld -march=rv32i -mabi=ilp32 -o flash-loader.elf $<
+	$(OBJCOPY) -O binary flash-loader.elf $@
+
+char-test-sram.bin: char-test-sram.c sram.ld
+	$(CC_RV) -nostdlib -nostartfiles -O2 -T sram.ld -march=rv32i -mabi=ilp32 -o char-test-sram.elf $<
+	$(OBJCOPY) -O binary char-test-sram.elf $@
+
 sim: $(VSRCS) $(CSRCS)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
@@ -77,7 +85,7 @@ sim: $(VSRCS) $(CSRCS)
 		$(VSRCS) $(CSRCS)
 
 run: sim
-	$(OBJ_DIR)/$(TOPNAME) $(IMG) $(DIFF)
+	$(OBJ_DIR)/$(TOPNAME) $(IMG) $(if $(DIFF),$(DIFF),$(if $(FLASH),none)) $(FLASH)
 
 clean:
-	rm -rf $(OBJ_DIR) char-test.elf char-test.bin
+	rm -rf $(OBJ_DIR) *.elf *.bin

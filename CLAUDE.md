@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：cpu-tests 37/37 全部通过 DiffTest（含 UART + Flash）
+## 当前状态：SPI 真实协议 + Flash 启动
 
-CPU 从 MROM 取指，数据/栈在 SRAM，通过 AXI4 总线访问 UART 和 Flash。AM 平台 `riscv32im-ysyxsoc` 已创建。cpu-tests 全部 37 个测试通过 DiffTest 对拍。UART16550 已正确初始化（8N1, divisor=1），putch() 轮询 LSR THRE 位后写入 THR。Flash 通过 FAST_FLASH 模式（DPI-C flash_read）实现快速读取，已知模式校验通过。NEMU 侧 TARGET_SHARE 已添加 UART + Flash 地址映射。异常（IFU/LSU Access Fault）统一通过 exception 字段沿流水线传递，在 WBU commit 点注入 CSR。
+FAST_FLASH 已关闭，改用真实 SPI 协议驱动 flash 读取。bitrev SPI slave 模块已实现并通过测试。spi-flash-test 通过软件驱动 SPI master 读取 flash 256 个 word 校验通过。flash-loader 从 MROM 启动，通过 SPI 读 flash 到 SRAM 并跳转执行 char-test-sram，输出 'A\n' 后 ebreak 退出。NEMU 侧添加 SPI 寄存器地址映射（读返回 0，写忽略）。cpu-tests 37/37 DiffTest 回归需临时开 FAST_FLASH。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -130,12 +130,34 @@ cd sim_soc && make verilog
 - `am/src/riscv/ysyxsoc/trm.c` — uart_init()：DLAB=1 设 divisor=1，DLAB=0 设 8N1；putch() 轮询 LSR[5](THRE) 后写 THR；_trm_init() 调用 uart_init()
 - `nemu/src/memory/paddr.c` — TARGET_SHARE 分支添加 UART 地址范围(0x10000000, 8B)：读 LSR 返回 0x60(THRE+TEMT)，其余返回 0；写静默忽略
 
-### 13. Flash 读取（FAST_FLASH + DPI-C）
-- `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — 启用 `FAST_FLASH` 宏，绕过真实 SPI 时序，通过 DPI-C flash_read 直接读取
-  - CPU 访问 0x3000XXXX → flash_cmd 模块取 addr[23:0] 对齐到 4 字节 → flash_read(offset, data)
-- `sim_soc/test_bench_soc.cpp` — flash_read 实现：16MB flash 缓冲区，init_flash() 写入已知模式（0xdeadbeef ^ (i * 0x01010101u)）
-- `nemu/src/memory/paddr.c` — TARGET_SHARE 分支添加 Flash 地址范围(0x30000000, 16MB)，init_flash_nemu() 写入相同已知模式
-- `am-kernels/tests/cpu-tests/tests/flash-test.c` — 从 MROM 执行，读取 flash 256 个 word 校验已知模式
+### 13. Flash 读取（FAST_FLASH + DPI-C）→ 已被真实 SPI 替代
+- 旧方案：`FAST_FLASH` 宏绕过 SPI 时序，DPI-C flash_read 直读
+- 现已注释 `FAST_FLASH`，改用真实 SPI 协议（见 §14）
+- `sim_soc/test_bench_soc.cpp` — flash_read DPI-C 仍保留（flash.v 内部 flash_cmd 模块使用）
+- `nemu/src/memory/paddr.c` — Flash 地址映射保留
+- `am-kernels/tests/cpu-tests/tests/flash-test.c` — 旧测试（需 FAST_FLASH 才能运行）
+
+### 14. bitrev SPI slave 模块
+- `ysyxSoC/perip/bitrev/bitrev.v` — 位翻转 SPI slave：接收 8 bit → 位翻转 → 发送 8 bit（总 16 bit）
+  - MSB first，posedge sck 采样/输出，SS 低有效，空闲 MISO=1
+  - SoC 中连接在 SPI SS[7]
+- `am-kernels/tests/cpu-tests/tests/bitrev-test.c` — SPI 驱动测试：DIVIDER=0, SS=0x80, CHAR_LEN=16, ASS|Tx_NEG|GO
+
+### 15. 软件驱动 SPI Flash 读取
+- `ysyxSoC/perip/spi/rtl/spi_top_apb.v` — 注释 `FAST_FLASH`，启用真实 SPI master（spi_top）
+- `am-kernels/tests/cpu-tests/tests/spi-flash-test.c` — 64-bit SPI 传输（8 cmd + 24 addr + 32 data）
+  - TX_1 = {0x03, addr[23:0]}，TX_0 = 0（dummy），CHAR_LEN=64
+  - flash.v 内部 data_bswap，软件需 bswap32(RX_0) 还原
+  - 读 256 个 word 校验已知模式通过
+- `nemu/src/memory/paddr.c` — 添加 SPI 寄存器地址范围(0x10001000, 0x1000)：读返回 0（GO=0），写忽略
+
+### 16. Flash 启动（flash-loader）
+- `sim_soc/flash-loader.c` — 从 MROM 执行，通过 SPI 读 flash 到 SRAM(0x0f000000)，跳转执行
+  - flash_read(): 64-bit SPI 传输 + bswap32，加载 4KB
+- `sim_soc/char-test-sram.c` — SRAM 版 char-test：输出 'A\n' 后 ebreak
+- `sim_soc/sram.ld` — SRAM 链接脚本（起始 0x0f000000）
+- `sim_soc/test_bench_soc.cpp` — init_flash 支持文件加载（argv[3]），无文件时用默认已知模式
+- `sim_soc/Makefile` — 新增 flash-loader.bin、char-test-sram.bin 目标；run 支持 FLASH= 参数
 
 ## 编译与运行
 ```bash
@@ -156,12 +178,26 @@ cd sim_soc && make run DIFFTEST=1 IMG=/path/to/test.bin DIFF=/home/lj/ysyx-workb
 # 编译 NEMU .so（需要 CONFIG_TARGET_SHARE=y）
 cd nemu && make ISA=riscv32 -j$(nproc)
 
+# bitrev 测试（无 DiffTest）
+make run IMG=.../bitrev-test-riscv32im-ysyxsoc.bin
+
+# SPI flash 读取测试（无 DiffTest）
+make run IMG=.../spi-flash-test-riscv32im-ysyxsoc.bin
+
+# flash 加载 char-test 到 SRAM 执行
+cd sim_soc && make flash-loader.bin char-test-sram.bin
+make run IMG=flash-loader.bin FLASH=char-test-sram.bin
+
 # 旧的 char-test 仍可用
 cd sim_soc && make char-test.bin && make run
+
+# cpu-tests DiffTest 回归（需临时开 FAST_FLASH）
+# 编辑 spi_top_apb.v 取消注释 `define FAST_FLASH，重新 make sim
 ```
 
 ## 下一步待办
-1. 从 flash 启动（将程序加载到 flash 而非 MROM，支持更大程序）
+1. 将 AM 程序（cpu-tests）改为从 flash 启动（flash-loader + AM linker 适配）
+2. SPI 相关测试的 DiffTest 支持（NEMU 侧模拟 SPI 行为）
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -187,6 +223,9 @@ cd sim_soc && make char-test.bin && make run
 16. mrom_read 地址对齐修复：DPI-C 未对齐到 4 字节边界导致 lbu 从 MROM 读错字节，string/crc32 DiffTest 失败。修复后 cpu-tests 35/35 全部通过
 17. UART16550 初始化 + putch() 轮询：uart_init() 设 8N1/divisor=1，putch() 轮询 LSR THRE；NEMU 侧添加 UART 地址映射。cpu-tests 36/36 全部通过 DiffTest
 18. Flash 读取：启用 FAST_FLASH 宏，实现 flash_read DPI-C（16MB 缓冲区 + 已知模式），NEMU 侧添加 flash 地址映射，flash-test 校验通过。cpu-tests 37/37 全部通过 DiffTest
+19. bitrev SPI slave：实现位翻转模块（接收 8bit → 翻转 → 发送 8bit），bitrev-test 通过 SPI master 驱动校验通过
+20. 软件驱动 SPI Flash：关闭 FAST_FLASH，64-bit SPI 传输（0x03 + addr + dummy），bswap32 还原字节序，spi-flash-test 256 word 校验通过。NEMU 添加 SPI 地址映射
+21. Flash 启动：flash-loader 从 MROM 执行，SPI 读 flash 到 SRAM 并跳转，char-test-sram 输出 'A\n' + ebreak 成功
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

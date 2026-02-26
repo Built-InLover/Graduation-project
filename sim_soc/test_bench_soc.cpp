@@ -23,11 +23,22 @@ static uint8_t mrom_data[4096];
 #define FLASH_SIZE (16 * 1024 * 1024)
 static uint8_t flash_data[FLASH_SIZE];
 
-static void init_flash() {
-    // 写入已知模式，供测试校验（NEMU 侧需写入相同模式）
-    for (unsigned i = 0; i < 256; i++) {
-        uint32_t val = 0xdeadbeef ^ (i * 0x01010101u);
-        memcpy(flash_data + i * 4, &val, 4);
+static void init_flash(const char *flash_file) {
+    if (flash_file) {
+        FILE *fp = fopen(flash_file, "rb");
+        if (fp) {
+            size_t n = fread(flash_data, 1, FLASH_SIZE, fp);
+            fclose(fp);
+            printf("Loaded %zu bytes into Flash\n", n);
+        } else {
+            fprintf(stderr, "cannot open flash file %s\n", flash_file);
+        }
+    } else {
+        // 默认已知模式（兼容旧测试）
+        for (unsigned i = 0; i < 256; i++) {
+            uint32_t val = 0xdeadbeef ^ (i * 0x01010101u);
+            memcpy(flash_data + i * 4, &val, 4);
+        }
     }
 }
 
@@ -212,8 +223,9 @@ void one_cycle() {
 }
 
 int main(int argc, char **argv) {
-    const char *bin_file = (argc > 1) ? argv[1] : "char-test.bin";
-    const char *diff_so  = (argc > 2) ? argv[2] : NULL;
+    const char *bin_file   = (argc > 1) ? argv[1] : "char-test.bin";
+    const char *diff_so    = (argc > 2 && strcmp(argv[2], "none") != 0) ? argv[2] : NULL;
+    const char *flash_file = (argc > 3) ? argv[3] : NULL;
 
     FILE *fp = fopen(bin_file, "rb");
     if (!fp) { fprintf(stderr, "cannot open %s\n", bin_file); return 1; }
@@ -221,7 +233,7 @@ int main(int argc, char **argv) {
     fclose(fp);
     printf("Loaded %zu bytes into MROM\n", n);
 
-    init_flash();
+    init_flash(flash_file);
 
 #ifdef DIFFTEST_ON
     if (diff_so) {
