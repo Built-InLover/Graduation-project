@@ -23,7 +23,7 @@ class IFU extends Module {
     val epoch = Bool()
   }
   
-  val pc_reg    = RegInit("h2000_0000".U(32.W))
+  val pc_reg    = RegInit("h3000_0000".U(32.W))
   val epoch_reg = RegInit(false.B)
   val meta_queue = Module(new Queue(new IfuMetaBundle, pipelineDepth, pipe = true))
 
@@ -40,7 +40,30 @@ class IFU extends Module {
   // ==================================================================
   //                        1. AXI 读请求连线 (AR 通道)
   // ==================================================================
-  val req_valid = meta_queue.io.enq.ready && !reset.asBool
+  // AR 请求状态机：确保 arvalid 只持续一拍，防止 SoC buffer 重复接受
+  val s_idle :: s_ar :: s_wait :: Nil = Enum(3)
+  val ar_state = RegInit(s_idle)
+  switch(ar_state) {
+    is(s_idle) {
+      // 条件满足时进入 s_ar，拉高 arvalid 一拍
+      when(meta_queue.io.enq.ready && !reset.asBool) {
+        ar_state := s_ar
+      }
+    }
+    is(s_ar) {
+      when(io.bus.ar.fire) {
+        ar_state := s_wait  // 握手成功，等 R 响应
+      }
+      // 如果没 fire（ready=0），保持 s_ar 继续等
+    }
+    is(s_wait) {
+      when(io.bus.r.fire) {
+        ar_state := s_idle  // R 响应回来，可以发下一个
+      }
+    }
+  }
+
+  val req_valid = (ar_state === s_ar) && !reset.asBool
   io.bus.ar.valid      := req_valid
   io.bus.ar.bits.addr  := pc_reg
   io.bus.ar.bits.id    := 0.U

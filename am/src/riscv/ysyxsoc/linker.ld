@@ -1,7 +1,7 @@
 /*
  * 地址空间 (Address Space)
  * -------------------------------------------------------------------------
- * [MROM] (0x20000000 - 0x20000FFF)  <-- 程序存储/启动区
+ * [FLASH] (0x30000000 - 0x30FFFFFF)  <-- 程序存储/启动区 (XIP)
  * |-----------------------|
  * |       *(entry)        |  <-- _start (复位向量入口)
  * |-----------------------|
@@ -18,7 +18,7 @@
  * [SRAM] (0x0f000000 - 0x0f001FFF)  <-- 数据运行区
  * |-----------------------| <--- 0x0f000000 (ORIGIN)
  * |   .data/.sdata (VMA)  |  <-- 运行地址 (VMA), 由 _data_start 指向
- * |   (全局初始化变量)     |      (由启动代码从 MROM 搬运过来)
+ * |   (全局初始化变量)     |      (由启动代码从 FLASH 搬运过来)
  * |-----------------------| <--- _data_end
  * |       .bss            |  <-- 由 _bss_start 指向
  * |   (全局清零变量)       |      (由启动代码手动清零)
@@ -37,27 +37,27 @@
 ENTRY(_start)
 
 MEMORY {
-  MROM (rx)  : ORIGIN = 0x20000000, LENGTH = 4K
-  SRAM (rwx) : ORIGIN = 0x0f000000, LENGTH = 8K
+  FLASH (rx)  : ORIGIN = 0x30000000, LENGTH = 16M
+  SRAM  (rwx) : ORIGIN = 0x0f000000, LENGTH = 8K
 }
 
 SECTIONS {
   .text : {
     *(entry)
     *(.text*)
-  } > MROM
+  } > FLASH
 
   .rodata : {
     *(.rodata*)
     . = ALIGN(4);
-  } > MROM
+  } > FLASH
 
   .data : {
     _data_start = .;
     *(.data*)
     *(.sdata*)
     _data_end = .;
-  } > SRAM AT > MROM
+  } > SRAM AT > FLASH
 
   _data_lma = LOADADDR(.data);
 

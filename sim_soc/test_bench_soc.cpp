@@ -13,7 +13,7 @@
 #endif
 
 #ifndef MAX_CYCLES
-#define MAX_CYCLES 1000000
+#define MAX_CYCLES 20000000
 #endif
 
 // MROM 缓冲区（4KB，与硬件一致）
@@ -167,10 +167,10 @@ static void init_difftest(const char *ref_so, size_t img_size) {
     assert(ref_difftest_memcpy && ref_difftest_regcpy && ref_difftest_exec && ref_difftest_init);
 
     ref_difftest_init(0);
-    ref_difftest_memcpy(0x20000000, mrom_data, img_size, DIFFTEST_TO_REF);
+    ref_difftest_memcpy(0x30000000, flash_data, img_size, DIFFTEST_TO_REF);
 
     // 初始化 NPC 状态并同步到 REF
-    npc_cpu.pc = 0x20000000;
+    npc_cpu.pc = 0x30000000;
     npc_cpu.csr.mstatus = 0x1800;
     ref_difftest_regcpy(&npc_cpu, DIFFTEST_TO_REF);
 
@@ -229,11 +229,9 @@ int main(int argc, char **argv) {
 
     FILE *fp = fopen(bin_file, "rb");
     if (!fp) { fprintf(stderr, "cannot open %s\n", bin_file); return 1; }
-    size_t n = fread(mrom_data, 1, sizeof(mrom_data), fp);
+    size_t n = fread(flash_data, 1, FLASH_SIZE, fp);
     fclose(fp);
-    printf("Loaded %zu bytes into MROM\n", n);
-
-    init_flash(flash_file);
+    printf("Loaded %zu bytes into Flash\n", n);
 
 #ifdef DIFFTEST_ON
     if (diff_so) {
@@ -273,6 +271,7 @@ int main(int argc, char **argv) {
         }
 #ifdef DIFFTEST_ON
         if (difftest_commit) {
+            difftest_commit = false;
             if (!difftest_check()) {
                 printf("[difftest] FAIL at cycle %d\n", i);
 #ifdef TRACE_ON
@@ -286,6 +285,10 @@ int main(int argc, char **argv) {
 #endif
     }
 
+    if (!ebreak_flag) {
+        printf("TIMEOUT: no ebreak after %d cycles\n", MAX_CYCLES);
+    }
+
     printf("--- ysyxSoC Simulation End (%ld cycles) ---\n", contextp->time() / 2);
 
 #ifdef TRACE_ON
@@ -293,5 +296,5 @@ int main(int argc, char **argv) {
 #endif
     delete top;
     delete contextp;
-    return 0;
+    return ebreak_flag ? 0 : 1;
 }

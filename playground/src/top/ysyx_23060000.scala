@@ -76,16 +76,16 @@ class ysyx_23060000 extends Module {
   // ==================================================================
   val lsu_ext_req = lsu_ext_ar_valid || lsu_ext_aw_valid
 
-  // AR 通道：LSU 优先
-  io.master.ar.valid := Mux(lsu_ext_req, lsu_ext_ar_valid, core.io.ifu_bus.ar.valid)
-  io.master.ar.bits  := Mux(lsu_ext_req, core.io.lsu_bus.ar.bits, core.io.ifu_bus.ar.bits)
+  // AR 通道：LSU 读优先（写请求不阻塞 AR 通道）
+  io.master.ar.valid := Mux(lsu_ext_ar_valid, lsu_ext_ar_valid, core.io.ifu_bus.ar.valid)
+  io.master.ar.bits  := Mux(lsu_ext_ar_valid, core.io.lsu_bus.ar.bits, core.io.ifu_bus.ar.bits)
 
   // IFU AR ready
-  core.io.ifu_bus.ar.ready := io.master.ar.ready && !lsu_ext_req
+  core.io.ifu_bus.ar.ready := io.master.ar.ready && !lsu_ext_ar_valid
 
   // LSU AR ready（外部部分，覆盖上面的默认值）
   when(!is_clint_r) {
-    core.io.lsu_bus.ar.ready := io.master.ar.ready && lsu_ext_req
+    core.io.lsu_bus.ar.ready := io.master.ar.ready && lsu_ext_ar_valid
   }
 
   // AW 通道（只有 LSU 外部使用）

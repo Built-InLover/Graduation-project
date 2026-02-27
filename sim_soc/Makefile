@@ -1,4 +1,4 @@
-.PHONY: default sim clean verilog
+.PHONY: default sim clean verilog run
 
 TOPNAME = ysyxSoCFull
 YSYXSOC_HOME = $(abspath ../../ysyxSoC)
@@ -27,12 +27,9 @@ CFLAGS_EXTRA += -DDIFFTEST_ON
 LDFLAGS_EXTRA += -ldl
 endif
 
-OBJ_DIR = ./obj_dir
-
-# Cross-compile toolchain
-CROSS_COMPILE = riscv64-linux-gnu-
-CC_RV = $(CROSS_COMPILE)gcc
-OBJCOPY = $(CROSS_COMPILE)objcopy
+# 不同配置使用不同 obj_dir，避免 DIFFTEST/非 DIFFTEST 互相覆盖
+OBJ_SUFFIX := $(if $(DIFFTEST),_dt)$(if $(TRACE),_trace)
+OBJ_DIR = ./obj_dir$(OBJ_SUFFIX)
 
 # Verilog sources
 # 1. ysyxSoCFull (顶层)
@@ -62,14 +59,6 @@ verilog:
 
 default: sim
 
-xip-jump.bin: xip-jump.c mrom.ld
-	$(CC_RV) -nostdlib -nostartfiles -O2 -T mrom.ld -march=rv32i -mabi=ilp32 -o xip-jump.elf $<
-	$(OBJCOPY) -O binary xip-jump.elf $@
-
-char-test-flash.bin: char-test-flash.c flash.ld
-	$(CC_RV) -nostdlib -nostartfiles -O2 -T flash.ld -march=rv32i -mabi=ilp32 -o char-test-flash.elf $<
-	$(OBJCOPY) -O binary char-test-flash.elf $@
-
 sim: $(VSRCS) $(CSRCS)
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
@@ -80,8 +69,9 @@ sim: $(VSRCS) $(CSRCS)
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
 
+# 用法: make run IMG=xxx.bin [DIFFTEST=1 DIFF=path/to/nemu.so] [FLASH=flash.bin]
 run: sim
 	$(OBJ_DIR)/$(TOPNAME) $(IMG) $(if $(DIFF),$(DIFF),$(if $(FLASH),none)) $(FLASH)
 
 clean:
-	rm -rf $(OBJ_DIR) *.elf *.bin
+	rm -rf obj_dir obj_dir_dt obj_dir_trace obj_dir_dt_trace

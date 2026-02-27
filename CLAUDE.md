@@ -17,9 +17,9 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：XIP Flash 执行
+## 当前状态：Flash XIP 直接启动
 
-在真实 SPI 协议基础上实现了 XIP（Execute In Place）硬件状态机。CPU 访问 0x30000000 地址空间时，spi_top_apb.v 内部状态机自动完成 SPI 传输（8 states: IDLE→WR_TX1→WR_TX0→WR_SS→WR_CTRL→POLL→RD_RX0→DONE），对 CPU 透明。xip-flash-test 256 word 校验通过，xip-jump 从 MROM 跳转到 flash 执行 char-test-flash 输出 'A\n' + ebreak 成功。软件驱动 SPI 和 XIP 硬件状态机共存：SPI 寄存器访问（0x10001000）走 APB 直连，flash 地址访问（0x30000000）走 XIP 状态机。
+CPU 复位 PC 改为 0x30000000（Flash），程序直接烧入 Flash 通过 XIP 执行，彻底不再依赖 MROM 跳板。AM 平台 `riscv32im-ysyxsoc` 已适配：linker.ld 将 .text/.rodata 放入 FLASH(0x30000000, 16M)，.data LMA 也在 FLASH，start.S 从 Flash 搬运 .data 到 SRAM。ysyxsoc.mk 新增 `run` 目标，支持 `make ARCH=riscv32im-ysyxsoc ALL=xxx run` 单个测试和批量测试。DiffTest 已适配（NEMU 初始 PC=0x30000000，memcpy 写入 flash 地址）。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -30,7 +30,7 @@
 
 ### 1. AXI4 接口改造（全链路原生 AXI4）
 - `common/AXI4.scala` — 完整 AXI4 接口定义（id/len/size/burst/last）
-- `corewithbus/IFU.scala` — AR 通道 id=0, len=0, size=2, burst=1, 复位 PC=0x20000000（MROM）
+- `corewithbus/IFU.scala` — AR 通道 id=0, len=0, size=2, burst=1, 复位 PC=0x30000000（Flash XIP）
   - inst_queue（Queue, 深度4）缓冲 R 通道响应，r.ready 不依赖下游流水线，防止死锁
 - `corewithbus/LSU.scala` — AR/AW 通道 id=1, size 根据 func 动态设置（lb=0, lh=1, lw=2）
 
@@ -66,31 +66,27 @@ cd sim_soc && make verilog
   - `verilog` 目标：mill 生成 + sed 信号名修正（一条命令完成）
   - YSYXSOC_HOME = `$(abspath ../../ysyxSoC)` （注意相对路径基于 sim_soc/）
   - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
-  - xip-jump.bin / char-test-flash.bin 编译目标
 - `sim_soc/test_bench_soc.cpp` — 仿真驱动
-  - mrom_read 加载 bin 到 4KB 缓冲区，flash_read 读取 16MB flash 缓冲区（已知模式初始化）
+  - argv[1]=bin（加载到 Flash 16MB 缓冲区），argv[2]=diff_so（可选）
+  - flash_read DPI-C 供 flash.v 内部使用，mrom_read DPI-C 保留（SoC 硬件仍有 MROM 模块）
   - DPI-C sim_ebreak() 终止机制：CSR 检测到 ebreak 后通知 testbench 退出
   - 复位 10 周期后主循环（最多 100 万周期，ebreak 提前退出）
   - FST 波形输出到 obj_dir/ysyxSoCFull.fst
-- `sim_soc/xip-jump.c` — MROM 程序，跳转到 0x30000000（XIP 执行入口）
-- `sim_soc/char-test-flash.c` — Flash 版 char-test：输出 'A\n' + ebreak，链接到 0x30000000
-- `sim_soc/mrom.ld` — MROM 链接脚本（起始 0x20000000）
-- `sim_soc/flash.ld` — Flash 链接脚本（起始 0x30000000）
 
 ### 7. AM 运行时环境（riscv32im-ysyxsoc）
 - 源文件在 `am/` 目录下，`abstract-machine/` 对应位置为软链接（绝对路径）
 - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
 - `am/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
+  - 新增 `run` 目标：调用 sim_soc/make run，透传 IMG/DIFFTEST/DIFF 参数
 - `am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本
-  - MROM (0x20000000, 4KB): .text + .rodata
-  - SRAM (0x0f000000, 8KB): .data + .bss + 栈(4KB) + 堆
-  - .data 使用 `AT > MROM` 实现 LMA/VMA 分离
-- `am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM）
+  - FLASH (0x30000000, 16M): .text + .rodata + .data LMA
+  - SRAM (0x0f000000, 8K): .data VMA + .bss + 栈(4KB) + 堆
+  - .data 使用 `AT > FLASH` 实现 LMA/VMA 分离
+- `am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM，从 Flash 搬运 .data 到 SRAM）
 - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
   - putch() 写 UART 0x10000000（sb 指令）
   - halt() 通过 ebreak 退出
   - 无 mainargs 机制（简化）
-- sim_soc 支持 `IMG=` 参数指定 bin 文件路径
 - **软链接约定**：后续新增 AM ysyxsoc 相关文件，先在 `am/` 下创建，再去 `abstract-machine/` 对应位置加软链接（绝对路径）
 
 ### 8. ysyxSoCFull.v 模块名替换
@@ -104,12 +100,12 @@ cd sim_soc && make verilog
   - CPU_state 结构体与 NEMU 一致（注意 CSR 字段顺序：mtvec, mepc, mstatus, mcause）
   - NPC debug_csr 顺序：[0]=mcause, [1]=mepc, [2]=mstatus, [3]=mtvec
   - DPI-C: sim_set_gpr() 设置 GPR, sim_difftest() 提交指令
-  - init_difftest(): dlopen NEMU .so → difftest_init → memcpy MROM → regcpy 同步初始状态
+  - init_difftest(): dlopen NEMU .so → difftest_init → memcpy Flash → regcpy 同步初始状态
   - 主循环每拍检查 difftest_commit，比较 GPR/PC/CSR
 - `sim_soc/Makefile` — DIFFTEST=1 启用，LDFLAGS 加 -ldl，run 目标接受 DIFF 参数
 - NEMU 配置：`.config` 中 `CONFIG_TARGET_SHARE=y`（非 NATIVE_ELF），编译产物为 .so
-  - `nemu/src/memory/paddr.c` — TARGET_SHARE 下添加 MROM(0x20000000,4KB) + SRAM(0x0f000000,8KB)
-  - `nemu/src/isa/riscv32/init.c` — TARGET_SHARE 下 PC=0x20000000，跳过内置镜像
+  - `nemu/src/memory/paddr.c` — TARGET_SHARE 下添加 MROM(0x20000000,4KB) + SRAM(0x0f000000,8KB) + Flash(0x30000000,16MB，可读写用于 difftest memcpy)
+  - `nemu/src/isa/riscv32/init.c` — TARGET_SHARE 下 PC=0x30000000，跳过内置镜像
 
 ### 10. 异常处理机制（统一 WBU commit 点）
 - 架构：IFU(fault) → IDU(exception) → EXU(透传) → WBU(检测) → CSR(exc_in注入) → mtvec redirect + flush_all
@@ -166,51 +162,44 @@ cd sim_soc && make verilog
   - APB pready：IDLE 时来自 wb_ack，XIP 时仅在 DONE 状态为 1
   - bswap32 还原字节序，写保护（flash 地址 + pwrite → $fatal）
 - `am-kernels/tests/cpu-tests/tests/xip-flash-test.c` — XIP 读取测试：指针直读 0x30000000，256 word 校验通过
-- `sim_soc/xip-jump.c` — MROM 程序，跳转到 0x30000000（IFU 后续取指全走 XIP）
-- `sim_soc/char-test-flash.c` — Flash 版 char-test：输出 'A\n' + ebreak，链接到 0x30000000
-- `sim_soc/flash.ld` — Flash 链接脚本（起始 0x30000000）
-- `sim_soc/Makefile` — 新增 xip-jump.bin、char-test-flash.bin 编译目标
+
+### 18. Flash 直接启动（去 MROM 化）
+- IFU 复位 PC 改为 0x30000000，CPU 复位后直接从 Flash XIP 取指
+- linker.ld：FLASH(0x30000000, 16M) 替代 MROM，.text/.rodata/.data LMA 全部在 FLASH
+- test_bench_soc.cpp：bin 加载到 flash_data（不再加载到 mrom_data），命令行简化为 argv[1]=bin argv[2]=diff_so
+- DiffTest：init_difftest memcpy 到 0x30000000，NPC/NEMU 初始 PC=0x30000000
+- NEMU paddr.c：flash 地址可写（支持 difftest_memcpy 初始化）
+- ysyxsoc.mk 新增 `run` 目标，支持 AM 框架下 `make run` 直接运行仿真
+- 已删除旧文件：xip-jump.c、char-test-flash.c、flash.ld、mrom.ld
 
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
 cd sim_soc && make verilog
 
-# 编译 AM 测试程序
-cd /home/lj/ysyx-workbench/am-kernels/tests/cpu-tests
-make ARCH=riscv32im-ysyxsoc ALL=dummy
-
-# verilator 编译 + 运行仿真（不带 DiffTest）
+# 编译仿真器
 cd sim_soc && make sim
-cd sim_soc && make run IMG=/path/to/test.bin
+
+# 编译 + 运行单个 AM 测试（自动调用 sim_soc 仿真）
+cd /home/lj/ysyx-workbench/am-kernels/tests/cpu-tests
+make ARCH=riscv32im-ysyxsoc ALL=dummy run
 
 # 带 DiffTest 运行
-cd sim_soc && make run DIFFTEST=1 IMG=/path/to/test.bin DIFF=/home/lj/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so
+make ARCH=riscv32im-ysyxsoc ALL=dummy run DIFFTEST=1 DIFF=/home/lj/ysyx-workbench/nemu/build/riscv32-nemu-interpreter-so
+
+# 批量测试（编译+运行所有 cpu-tests）
+make ARCH=riscv32im-ysyxsoc run
+
+# 手动运行仿真（直接指定 bin）
+cd sim_soc && make run IMG=/path/to/test.bin
+cd sim_soc && make run IMG=/path/to/test.bin DIFFTEST=1 DIFF=/path/to/nemu.so
 
 # 编译 NEMU .so（需要 CONFIG_TARGET_SHARE=y）
 cd nemu && make ISA=riscv32 -j$(nproc)
-
-# bitrev 测试（无 DiffTest）
-make run IMG=.../bitrev-test-riscv32im-ysyxsoc.bin
-
-# SPI flash 读取测试（无 DiffTest）
-make run IMG=.../spi-flash-test-riscv32im-ysyxsoc.bin
-
-# XIP 读取测试
-make ARCH=riscv32im-ysyxsoc ALL=xip-flash-test
-cd sim_soc && make run IMG=.../xip-flash-test-riscv32im-ysyxsoc.bin
-
-# XIP 执行测试（MROM 跳转到 flash 执行）
-cd sim_soc && make xip-jump.bin char-test-flash.bin
-make run IMG=xip-jump.bin FLASH=char-test-flash.bin
-
-# cpu-tests DiffTest 回归（需临时开 FAST_FLASH）
-# 编辑 spi_top_apb.v 取消注释 `define FAST_FLASH，重新 make sim
 ```
 
 ## 下一步待办
-1. 将 AM 程序（cpu-tests）改为从 flash 启动（XIP + AM linker 适配）
-2. SPI/XIP 相关测试的 DiffTest 支持（NEMU 侧模拟 SPI 行为或 flash 地址映射）
+1. IOE/CTE 支持（键盘、VGA、时钟中断等）
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -240,9 +229,18 @@ make run IMG=xip-jump.bin FLASH=char-test-flash.bin
 20. 软件驱动 SPI Flash：关闭 FAST_FLASH，64-bit SPI 传输（0x03 + addr + dummy），bswap32 还原字节序，spi-flash-test 256 word 校验通过。NEMU 添加 SPI 地址映射
 21. Flash 启动：flash-loader 从 MROM 执行，SPI 读 flash 到 SRAM 并跳转，char-test-sram 输出 'A\n' + ebreak 成功
 22. XIP Flash：spi_top_apb.v 实现 8 状态 XIP 硬件状态机，CPU 读 0x30000000 自动完成 SPI 传输。xip-flash-test 256 word 校验通过，xip-jump 从 MROM 跳转到 flash 执行 char-test-flash 成功
+23. Flash 直接启动（去 MROM 化）：IFU 复位 PC 改为 0x30000000，linker.ld 改用 FLASH(16M) 替代 MROM(4KB)，bin 直接加载到 Flash，DiffTest 适配（NEMU PC/memcpy 改为 0x30000000），ysyxsoc.mk 新增 run 目标支持 AM 框架下 make run 和批量测试
+24. Flash XIP 连续取指修复 + DiffTest 全量回归：
+    - SPI XIP 状态机修复：S_IDLE 加 in_penable 条件防止非 APB access phase 误触发；扩展为 4-bit 状态机加 S_CLR_SS 状态确保每次传输后清除片选
+    - 测试框架修复：超时返回非零退出码，只有 ebreak 才判 PASS
+    - IFU/LSU 仲裁修复：LSU 写不阻塞 IFU 读，IFU 读不阻塞 LSU 写
+    - IFU 复位抑制：ar_state 状态机限制 outstanding 为 1，reset 时抑制 arvalid
+    - MAX_CYCLES 默认调至 2000 万（Flash XIP 每条指令 ~150 周期）
+    - cpu-tests 38/40 通过 DiffTest（spi-flash-test/bitrev-test 因 XIP 占用 SPI 预期失败）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
 - `core/SoCTop.scala`、`core/RAM.scala`、`core/Axi4LiteUART.scala`、`core/Axi4LiteCLINT.scala` — 旧 SoC 路由和 DPI-C 虚拟外设
 - `top/main.scala` — 旧入口点（已被 main_ysyxsoc.scala 替代）
-- `sim_soc/char-test.c`、`sim_soc/char-test-sram.c`、`sim_soc/flash-loader.c`、`sim_soc/sram.ld` — 被 XIP 方案取代（xip-jump + char-test-flash）
+- `sim_soc/char-test.c`、`sim_soc/char-test-sram.c`、`sim_soc/flash-loader.c`、`sim_soc/sram.ld` — 被 XIP 方案取代
+- `sim_soc/xip-jump.c`、`sim_soc/char-test-flash.c`、`sim_soc/flash.ld`、`sim_soc/mrom.ld` — 被 Flash 直接启动取代（不再需要 MROM 跳板）

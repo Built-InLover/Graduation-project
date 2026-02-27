@@ -19,6 +19,9 @@
 !build.sc
 build/
 
+# Verilator generated
+sim_soc/obj_dir*/
+
 # mill
 !*.mill
 !.mill-version

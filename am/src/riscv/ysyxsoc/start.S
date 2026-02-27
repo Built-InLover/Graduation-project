@@ -6,7 +6,7 @@ _start:
   mv s0, zero
   la sp, _stack_pointer
 
-  # 搬运 .data 从 MROM(LMA) 到 SRAM(VMA)
+  # 搬运 .data 从 FLASH(LMA) 到 SRAM(VMA)
   la a0, _data_start
   la a1, _data_lma
   la a2, _data_end
