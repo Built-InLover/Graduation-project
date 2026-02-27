@@ -2,7 +2,7 @@
 #include <klib-macros.h>
 
 extern char _heap_start;
-extern char _stack_top;
+extern char _heap_end;
 int main(const char *args);
 
 #define UART_BASE 0x10000000
@@ -12,7 +12,7 @@ int main(const char *args);
 #define UART_LCR  (UART_BASE + 0x03)
 #define UART_LSR  (UART_BASE + 0x05)
 
-Area heap = RANGE(&_heap_start, &_stack_top);
+Area heap = RANGE(&_heap_start, &_heap_end);
 
 static void uart_init() {
   *(volatile uint8_t *)UART_LCR = 0x80;  // DLAB=1

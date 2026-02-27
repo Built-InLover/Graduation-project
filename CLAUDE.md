@@ -17,9 +17,11 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：Flash XIP 直接启动
+## 当前状态：Flash XIP 直接启动 + PSRAM QPI 支持
 
 CPU 复位 PC 改为 0x30000000（Flash），程序直接烧入 Flash 通过 XIP 执行，彻底不再依赖 MROM 跳板。AM 平台 `riscv32im-ysyxsoc` 已适配：linker.ld 将 .text/.rodata 放入 FLASH(0x30000000, 16M)，.data LMA 也在 FLASH，start.S 从 Flash 搬运 .data 到 SRAM。ysyxsoc.mk 新增 `run` 目标，支持 `make ARCH=riscv32im-ysyxsoc ALL=xxx run` 单个测试和批量测试。DiffTest 已适配（NEMU 初始 PC=0x30000000，memcpy 写入 flash 地址）。
+
+PSRAM 已实现 QPI 模式：控制器复位后先用 1-bit SPI 发 35h 切换颗粒到 QPI，之后 CMD/ADDR/DATA 全部 4-bit。heap 指向 PSRAM（0x80000000），mem-test 4KB 校验通过。cpu-tests 39/40 通过（bitrev-test 因 SPI 冲突预期失败）。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -172,6 +174,24 @@ cd sim_soc && make verilog
 - ysyxsoc.mk 新增 `run` 目标，支持 AM 框架下 `make run` 直接运行仿真
 - 已删除旧文件：xip-jump.c、char-test-flash.c、flash.ld、mrom.ld
 
+### 19. PSRAM 颗粒仿真模型 + QPI 模式
+- `ysyxSoC/perip/psram/psram.v` — 替换空桩，实现 QSPI/QPI 颗粒行为模型
+  - 4MB 存储阵列（22-bit 地址）
+  - 状态机：IDLE→CMD→ADDR→DUMMY→RDATA/WDATA，ce_n 上升沿异步复位
+  - QSPI 模式：CMD 1-bit/cycle×8，ADDR/DATA 4-bit/cycle
+  - QPI 模式：CMD 4-bit/cycle×2，ADDR/DATA 4-bit/cycle（35h 命令切换）
+  - sck posedge 采样输入，sck negedge 驱动读数据输出
+- `ysyxSoC/perip/psram/efabless/EF_PSRAM_CTRL.v` — 升级为 QPI 版
+  - 新增 `PSRAM_INIT` 模块：1-bit SPI 发送 35h（8 cycle），done 信号通知 wb 层
+  - `PSRAM_READER` QPI 版：CMD 2 cycle（原 8），FINAL_COUNT = 13+size*2（原 19+size*2）
+  - `PSRAM_WRITER` QPI 版：CMD 2 cycle（原 8），FINAL_COUNT = 7+size*2（原 13+size*2）
+- `ysyxSoC/perip/psram/efabless/EF_PSRAM_CTRL_wb.v` — 主 FSM 加 ST_INIT 状态
+  - 复位后 state=ST_INIT，驱动 PSRAM_INIT 发 35h，done 后进入 ST_IDLE
+  - MUX：ST_INIT 时用 MI，ST_WAIT+wb_we 时用 MW，否则用 MR
+- `am/src/riscv/ysyxsoc/linker.ld` — heap 改为 PSRAM（0x80000000~0x80001000，4KB 测试）
+- `am/src/riscv/ysyxsoc/trm.c` — heap 范围改用 `_heap_end` 符号（原 `_stack_top`）
+- mem-test 4KB PSRAM 校验通过（8/16/32-bit），cpu-tests 39/40 通过
+
 ## 编译与运行
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -237,6 +257,12 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - IFU 复位抑制：ar_state 状态机限制 outstanding 为 1，reset 时抑制 arvalid
     - MAX_CYCLES 默认调至 2000 万（Flash XIP 每条指令 ~150 周期）
     - cpu-tests 38/40 通过 DiffTest（spi-flash-test/bitrev-test 因 XIP 占用 SPI 预期失败）
+25. PSRAM 颗粒仿真模型 + QPI 模式：
+    - psram.v 实现 QSPI/QPI 颗粒行为模型（4MB，EBh/38h/35h 命令）
+    - EF_PSRAM_CTRL.v 新增 PSRAM_INIT 模块，READER/WRITER 升级为 QPI（CMD 2 cycle）
+    - EF_PSRAM_CTRL_wb.v 主 FSM 加 ST_INIT 状态，复位后先发 35h 切换 QPI
+    - linker.ld heap 改为 PSRAM（0x80000000），trm.c 使用 _heap_end 符号
+    - mem-test 4KB PSRAM 校验通过，cpu-tests 39/40（bitrev-test 预期失败）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
