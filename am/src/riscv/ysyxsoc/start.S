@@ -6,10 +6,10 @@ _start:
   mv s0, zero
   la sp, _stack_pointer
 
-  # 搬运 .data 从 FLASH(LMA) 到 SRAM(VMA)
-  la a0, _data_start
-  la a1, _data_lma
-  la a2, _data_end
+  # 搬运 .text + .rodata + .data 从 Flash(LMA) 到 SRAM(VMA)
+  la a0, _sram_start       # SRAM 目标起始（.text VMA）
+  la a1, _sram_lma         # Flash 源起始（.text LMA）
+  la a2, _data_end         # SRAM 目标结束（.data VMA 末尾）
 1:
   bge a0, a2, 2f
   lw t0, 0(a1)
@@ -29,4 +29,7 @@ _start:
   j 3b
 4:
 
-  call _trm_init
+  # 绝对跳转到 SRAM 中的 _trm_init
+  # 不能用 call（PC-relative 会跳回 Flash 地址）
+  la t0, _trm_init
+  jalr ra, t0, 0

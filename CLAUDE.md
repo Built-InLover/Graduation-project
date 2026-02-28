@@ -17,11 +17,15 @@
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：Flash XIP 直接启动 + PSRAM QPI 支持
+## 当前状态：SRAM 执行 + PSRAM 4MB heap + NEMU 独立地址空间
 
-CPU 复位 PC 改为 0x30000000（Flash），程序直接烧入 Flash 通过 XIP 执行，彻底不再依赖 MROM 跳板。AM 平台 `riscv32im-ysyxsoc` 已适配：linker.ld 将 .text/.rodata 放入 FLASH(0x30000000, 16M)，.data LMA 也在 FLASH，start.S 从 Flash 搬运 .data 到 SRAM。ysyxsoc.mk 新增 `run` 目标，支持 `make ARCH=riscv32im-ysyxsoc ALL=xxx run` 单个测试和批量测试。DiffTest 已适配（NEMU 初始 PC=0x30000000，memcpy 写入 flash 地址）。
+CPU 复位 PC 为 0x30000000（Flash），bootloader（entry section）在 Flash XIP 执行，将 .text/.rodata/.data 从 Flash 搬运到 SRAM(0x0f000000)，然后绝对跳转到 SRAM 执行（单周期取指）。heap 使用完整 4MB PSRAM（0x80000000~0x80400000）。SRAM 8KB 限制（大程序链接时会报错）。
 
-PSRAM 已实现 QPI 模式：控制器复位后先用 1-bit SPI 发 35h 切换颗粒到 QPI，之后 CMD/ADDR/DATA 全部 4-bit。heap 指向 PSRAM（0x80000000），mem-test 4KB 校验通过。cpu-tests 39/40 通过（bitrev-test 因 SPI 冲突预期失败）。
+AM 平台 `riscv32im-ysyxsoc` 已适配：linker.ld 将 entry 放 Flash（VMA=LMA），.text/.rodata/.data 用 `> SRAM AT > FLASH`（VMA 在 SRAM，LMA 在 Flash），start.S 搬运整个 SRAM 区域后用 `la + jalr` 绝对跳转到 `_trm_init`。
+
+PSRAM 已实现 QPI 模式：控制器复位后先用 1-bit SPI 发 35h 切换颗粒到 QPI，之后 CMD/ADDR/DATA 全部 4-bit。heap 指向完整 4MB PSRAM（0x80000000~0x80400000）。
+
+NEMU（TARGET_SHARE 模式）已彻底去掉 pmem，改为独立地址空间：mrom_data(4KB) + sram_data(8KB) + flash_data(16MB) + psram_data(4MB)，guest_to_host 按地址分派到对应数组。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -80,11 +84,14 @@ cd sim_soc && make verilog
 - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
 - `am/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
   - 新增 `run` 目标：调用 sim_soc/make run，透传 IMG/DIFFTEST/DIFF 参数
-- `am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本
-  - FLASH (0x30000000, 16M): .text + .rodata + .data LMA
-  - SRAM (0x0f000000, 8K): .data VMA + .bss + 栈(4KB) + 堆
-  - .data 使用 `AT > FLASH` 实现 LMA/VMA 分离
-- `am/src/riscv/ysyxsoc/start.S` — 启动代码（设 sp 到 SRAM，从 Flash 搬运 .data 到 SRAM）
+- `am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本（SRAM 执行）
+  - FLASH (0x30000000, 16M): entry(bootloader VMA=LMA) + .text/.rodata/.data LMA
+  - SRAM (0x0f000000, 8K): .text/.rodata/.data VMA + .bss + 栈（向下增长到 SRAM 末尾）
+  - PSRAM (0x80000000, 4MB): heap（0x80000000~0x80400000）
+  - .text/.rodata/.data 使用 `> SRAM AT > FLASH` 实现 LMA/VMA 分离
+- `am/src/riscv/ysyxsoc/start.S` — bootloader（entry section，Flash XIP 执行）
+  - 搬运 .text+.rodata+.data 从 Flash(LMA) 到 SRAM(VMA)
+  - 用 `la + jalr` 绝对跳转到 SRAM 中的 _trm_init（不能用 call，PC-relative 会跳回 Flash）
 - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
   - putch() 写 UART 0x10000000（sb 指令）
   - halt() 通过 ebreak 退出
@@ -106,8 +113,10 @@ cd sim_soc && make verilog
   - 主循环每拍检查 difftest_commit，比较 GPR/PC/CSR
 - `sim_soc/Makefile` — DIFFTEST=1 启用，LDFLAGS 加 -ldl，run 目标接受 DIFF 参数
 - NEMU 配置：`.config` 中 `CONFIG_TARGET_SHARE=y`（非 NATIVE_ELF），编译产物为 .so
-  - `nemu/src/memory/paddr.c` — TARGET_SHARE 下添加 MROM(0x20000000,4KB) + SRAM(0x0f000000,8KB) + Flash(0x30000000,16MB，可读写用于 difftest memcpy)
-  - `nemu/src/isa/riscv32/init.c` — TARGET_SHARE 下 PC=0x30000000，跳过内置镜像
+  - `nemu/src/memory/paddr.c` — TARGET_SHARE 下独立地址空间：mrom_data(4KB) + sram_data(8KB) + flash_data(16MB) + psram_data(4MB)，无 pmem；guest_to_host 按地址分派；paddr_read/paddr_write 统一走 in_xxx + host_read/host_write
+  - `nemu/include/memory/paddr.h` — TARGET_SHARE 下去掉 PMEM_LEFT/PMEM_RIGHT/in_pmem，RESET_VECTOR=0x30000000u
+  - `nemu/src/isa/riscv32/init.c` — 统一用 RESET_VECTOR（TARGET_SHARE 下为 0x30000000），跳过内置镜像
+  - `nemu/src/device/io/mmio.c` — TARGET_SHARE 下跳过 in_pmem 重叠检查
 
 ### 10. 异常处理机制（统一 WBU commit 点）
 - 架构：IFU(fault) → IDU(exception) → EXU(透传) → WBU(检测) → CSR(exc_in注入) → mtvec redirect + flush_all
@@ -176,11 +185,12 @@ cd sim_soc && make verilog
 
 ### 19. PSRAM 颗粒仿真模型 + QPI 模式
 - `ysyxSoC/perip/psram/psram.v` — 替换空桩，实现 QSPI/QPI 颗粒行为模型
-  - 4MB 存储阵列（22-bit 地址）
+  - 4MB 存储阵列（22-bit 地址），DPI-C 稀疏存储
   - 状态机：IDLE→CMD→ADDR→DUMMY→RDATA/WDATA，ce_n 上升沿异步复位
   - QSPI 模式：CMD 1-bit/cycle×8，ADDR/DATA 4-bit/cycle
   - QPI 模式：CMD 4-bit/cycle×2，ADDR/DATA 4-bit/cycle（35h 命令切换）
   - sck posedge 采样输入，sck negedge 驱动读数据输出
+  - **addr_reg 高位截断修复**：DPI-C 调用统一用 `{8'b0, addr_reg[23:0]}`，防止 S_ADDR 移位残留高位污染 32-bit 地址
 - `ysyxSoC/perip/psram/efabless/EF_PSRAM_CTRL.v` — 升级为 QPI 版
   - 新增 `PSRAM_INIT` 模块：1-bit SPI 发送 35h（8 cycle），done 信号通知 wb 层
   - `PSRAM_READER` QPI 版：CMD 2 cycle（原 8），FINAL_COUNT = 13+size*2（原 19+size*2）
@@ -188,9 +198,21 @@ cd sim_soc && make verilog
 - `ysyxSoC/perip/psram/efabless/EF_PSRAM_CTRL_wb.v` — 主 FSM 加 ST_INIT 状态
   - 复位后 state=ST_INIT，驱动 PSRAM_INIT 发 35h，done 后进入 ST_IDLE
   - MUX：ST_INIT 时用 MI，ST_WAIT+wb_we 时用 MW，否则用 MR
-- `am/src/riscv/ysyxsoc/linker.ld` — heap 改为 PSRAM（0x80000000~0x80001000，4KB 测试）
+- `am/src/riscv/ysyxsoc/linker.ld` — heap 改为 PSRAM（0x80000000~0x80400000，完整 4MB）
 - `am/src/riscv/ysyxsoc/trm.c` — heap 范围改用 `_heap_end` 符号（原 `_stack_top`）
-- mem-test 4KB PSRAM 校验通过（8/16/32-bit），cpu-tests 39/40 通过
+- mem-test 4KB PSRAM 校验通过（8/16/32-bit），cpu-tests 38/40 通过（spi-flash-test/bitrev-test 预期失败）
+
+### 20. NEMU 独立地址空间改造（去 pmem）
+- `nemu/src/memory/paddr.c` — TARGET_SHARE 下彻底删除 pmem/pmem_read/pmem_write
+  - 独立数组：mrom_data(4KB) + sram_data(8KB) + flash_data(16MB) + psram_data(4MB)
+  - guest_to_host 按地址分派到对应数组（flash/psram/sram/mrom）
+  - paddr_read/paddr_write 统一走 in_xxx + host_read/host_write，无 pmem 兜底
+  - UART 读返回 LSR=0x60，SPI 读返回 0，写静默忽略
+- `nemu/include/memory/paddr.h` — TARGET_SHARE 下去掉 PMEM_LEFT/PMEM_RIGHT/in_pmem，RESET_VECTOR=0x30000000u
+- `nemu/src/isa/riscv32/init.c` — restart() 统一用 RESET_VECTOR
+- `nemu/src/device/io/mmio.c` — TARGET_SHARE 下跳过 in_pmem 重叠检查
+- 非 TARGET_SHARE 路径完全不变（传统 pmem 模式）
+- cpu-tests 38/40 DiffTest 通过（spi-flash-test/bitrev-test 预期失败）
 
 ## 编译与运行
 ```bash
@@ -263,6 +285,21 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - EF_PSRAM_CTRL_wb.v 主 FSM 加 ST_INIT 状态，复位后先发 35h 切换 QPI
     - linker.ld heap 改为 PSRAM（0x80000000），trm.c 使用 _heap_end 符号
     - mem-test 4KB PSRAM 校验通过，cpu-tests 39/40（bitrev-test 预期失败）
+26. NEMU 独立地址空间 + PSRAM 颗粒 addr_reg 修复：
+    - NEMU paddr.c：TARGET_SHARE 下删除 pmem，改为独立数组（mrom/sram/flash/psram_data）
+    - guest_to_host 按地址分派，paddr_read/paddr_write 统一 in_xxx 模式
+    - paddr.h：TARGET_SHARE 下去掉 PMEM_LEFT/PMEM_RIGHT/in_pmem，RESET_VECTOR=0x30000000u
+    - init.c：restart() 统一用 RESET_VECTOR
+    - mmio.c：TARGET_SHARE 下跳过 in_pmem 重叠检查
+    - psram.v addr_reg 高位污染修复：S_ADDR 移位只填充低 24 位，但 addr_reg 是 32 位，高 8 位残留上次操作值。DPI-C 调用传完整 32 位导致写入/读取地址不一致。修复：所有 DPI-C 调用统一用 {8'b0, addr_reg[23:0]}
+    - 此 bug 之前被 128MB pmem 掩盖（NEMU 侧不经过 PSRAM DPI-C），改造后暴露
+    - cpu-tests 38/40 DiffTest 通过（spi-flash-test/bitrev-test 预期失败）
+27. SRAM 执行 + PSRAM 4MB heap 改造：
+    - linker.ld：entry section 单独放 Flash（VMA=LMA），.text/.rodata/.data 改为 `> SRAM AT > FLASH`
+    - 新增 _sram_start/_sram_lma 符号，搬运范围从只搬 .data 扩大到 .text+.rodata+.data
+    - _heap_end 从 0x80001000(4KB) 扩大到 0x80400000(4MB)，去掉 _stack_top
+    - start.S：bootloader 搬运整个 SRAM 区域，用 `la + jalr` 绝对跳转到 SRAM（替代 PC-relative 的 call）
+    - 程序从 SRAM 单周期取指执行，大幅提升性能（原 Flash XIP 每条指令 ~150 周期）
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
