@@ -1,5 +1,7 @@
 AM_SRCS := riscv/ysyxsoc/start.S \
            riscv/ysyxsoc/trm.c \
+           riscv/ysyxsoc/cte.c \
+           riscv/ysyxsoc/trap.S \
            riscv/ysyxsoc/ioe.c \
            riscv/ysyxsoc/timer.c \
            riscv/ysyxsoc/input.c \
@@ -10,6 +12,8 @@ AM_SRCS := riscv/ysyxsoc/start.S \
 CFLAGS    += -fdata-sections -ffunction-sections
 LDSCRIPTS += $(AM_HOME)/am/src/riscv/ysyxsoc/linker.ld
 LDFLAGS   += --gc-sections -e _start
+# linker.ld 已合并 RT-Thread extra.ld 的 section，去掉原始 extra.ld 避免冲突
+LDFLAGS   := $(filter-out -T extra.ld,$(LDFLAGS))
 
 # sim_soc 仿真环境路径
 YSYXSOC_SIM_HOME ?= /home/lj/ysyx-workbench/Graduation-project/sim_soc

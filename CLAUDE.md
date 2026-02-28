@@ -12,20 +12,28 @@
   - `am/scripts/platform/ysyxsoc.mk` — 平台配置
   - `am/src/riscv/ysyxsoc/start.S` — 启动代码
   - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
+  - `am/src/riscv/ysyxsoc/cte.c` — CTE 上下文切换（复制自 npc/cte.c）
+  - `am/src/riscv/ysyxsoc/trap.S` — 异常入口（复制自 npc/trap.S）
   - `am/src/riscv/ysyxsoc/linker.ld` — 链接脚本
 - `/home/lj/ysyx-workbench/ysyxSoC/` — ysyxSoC 环境
 - `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：SRAM 执行 + PSRAM 4MB heap + NEMU 独立地址空间
+## 当前状态：RT-Thread 移植到 ysyxsoc（CTE 协作式调度）
 
-CPU 复位 PC 为 0x30000000（Flash），bootloader（entry section）在 Flash XIP 执行，将 .text/.rodata/.data 从 Flash 搬运到 SRAM(0x0f000000)，然后绝对跳转到 SRAM 执行（单周期取指）。heap 使用完整 4MB PSRAM（0x80000000~0x80400000）。SRAM 8KB 限制（大程序链接时会报错）。
+CPU 复位 PC 为 0x30000000（Flash），采用二级 Bootloader 启动：
+1. FSBL（fsbl section，Flash XIP 执行）：搬运 SSBL 从 Flash(LMA) 到 SRAM(VMA)，跳转到 SRAM
+2. SSBL（ssbl section，SRAM 执行）：搬运 .text+.rodata+.data 从 Flash(LMA) 到 PSRAM(VMA)，清零 .bss，跳转到 PSRAM 中的 _trm_init
+3. 程序在 PSRAM(0x80000000) 执行，栈在 PSRAM 末尾（32KB），heap 在 .bss 之后到栈底
 
-AM 平台 `riscv32im-ysyxsoc` 已适配：linker.ld 将 entry 放 Flash（VMA=LMA），.text/.rodata/.data 用 `> SRAM AT > FLASH`（VMA 在 SRAM，LMA 在 Flash），start.S 搬运整个 SRAM 区域后用 `la + jalr` 绝对跳转到 `_trm_init`。
+RT-Thread 内核 ~185KB，运行在 PSRAM。CTE 支持已添加（cte.c + trap.S），协作式调度（ecall yield）。
+栈从 SRAM 移到 PSRAM（RT-Thread 线程栈需求远超 SRAM 8KB），SRAM 仅用于 SSBL 临时执行。
 
-PSRAM 已实现 QPI 模式：控制器复位后先用 1-bit SPI 发 35h 切换颗粒到 QPI，之后 CMD/ADDR/DATA 全部 4-bit。heap 指向完整 4MB PSRAM（0x80000000~0x80400000）。
+PSRAM 已实现 QPI 模式：控制器复位后先用 1-bit SPI 发 35h 切换颗粒到 QPI，之后 CMD/ADDR/DATA 全部 4-bit。
 
 NEMU（TARGET_SHARE 模式）已彻底去掉 pmem，改为独立地址空间：mrom_data(4KB) + sram_data(8KB) + flash_data(16MB) + psram_data(4MB)，guest_to_host 按地址分派到对应数组。
+
+**RT-Thread 仿真状态**：RT-Thread 内核 ~185KB bin 编译通过，但 verilator 仿真未能验证——从 Flash XIP 搬运 185KB 到 PSRAM 所需仿真周期过多，实际运行不可行。RT-Thread 移植的正确性目前不可知，需要后续通过其他手段（如上板或优化仿真速度）验证。
 
 ## 开发规则
 - **文档同步**：每项任务完成后，必须及时更新 CLAUDE.md（当前状态、已完成工作、开发历程等相关章节）
@@ -84,14 +92,14 @@ cd sim_soc && make verilog
 - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口（RV32IM + libgcc）
 - `am/scripts/platform/ysyxsoc.mk` — 平台配置（最小 TRM，无 IOE/CTE）
   - 新增 `run` 目标：调用 sim_soc/make run，透传 IMG/DIFFTEST/DIFF 参数
-- `am/src/riscv/ysyxsoc/linker.ld` — 分离式链接脚本（SRAM 执行）
-  - FLASH (0x30000000, 16M): entry(bootloader VMA=LMA) + .text/.rodata/.data LMA
-  - SRAM (0x0f000000, 8K): .text/.rodata/.data VMA + .bss + 栈（向下增长到 SRAM 末尾）
-  - PSRAM (0x80000000, 4MB): heap（0x80000000~0x80400000）
-  - .text/.rodata/.data 使用 `> SRAM AT > FLASH` 实现 LMA/VMA 分离
-- `am/src/riscv/ysyxsoc/start.S` — bootloader（entry section，Flash XIP 执行）
-  - 搬运 .text+.rodata+.data 从 Flash(LMA) 到 SRAM(VMA)
-  - 用 `la + jalr` 绝对跳转到 SRAM 中的 _trm_init（不能用 call，PC-relative 会跳回 Flash）
+- `am/src/riscv/ysyxsoc/linker.ld` — 二级 Bootloader 链接脚本（PSRAM 执行）
+  - FLASH (0x30000000, 16M): fsbl(VMA=LMA) + .ssbl/.text/.rodata/.data LMA
+  - SRAM (0x0f000000, 8K): .ssbl VMA + 栈（向下增长到 SRAM 末尾）
+  - PSRAM (0x80000000, 4M): .text/.rodata/.data VMA + .bss + heap（_bss_end~0x80400000）
+  - .ssbl 使用 `> SRAM AT > FLASH`，.text/.rodata/.data 使用 `> PSRAM AT > FLASH`
+- `am/src/riscv/ysyxsoc/start.S` — 二级 Bootloader
+  - FSBL（fsbl section，Flash XIP）：搬运 SSBL 到 SRAM，`la + jalr` 跳转到 _ssbl_entry
+  - SSBL（ssbl section，SRAM 执行）：搬运 .text+.rodata+.data 到 PSRAM，清零 .bss，`la + jalr` 跳转到 _trm_init
 - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
   - putch() 写 UART 0x10000000（sb 指令）
   - halt() 通过 ebreak 退出
@@ -214,7 +222,29 @@ cd sim_soc && make verilog
 - 非 TARGET_SHARE 路径完全不变（传统 pmem 模式）
 - cpu-tests 38/40 DiffTest 通过（spi-flash-test/bitrev-test 预期失败）
 
-## 编译与运行
+### 21. RT-Thread 移植（CTE + linker.ld 合并 + CLINT 映射）
+- `am/src/riscv/ysyxsoc/cte.c` — 复制自 npc/cte.c，M-mode 异常处理（ecall yield/timer IRQ）
+- `am/src/riscv/ysyxsoc/trap.S` — 复制自 npc/trap.S，上下文保存/恢复
+- `abstract-machine/am/src/riscv/ysyxsoc/cte.c` / `trap.S` — 绝对路径软链接
+- `am/scripts/platform/ysyxsoc.mk` — AM_SRCS 添加 cte.c/trap.S；LDFLAGS 过滤掉 extra.ld（已合并到 linker.ld）
+- `am/src/riscv/ysyxsoc/linker.ld` — 合并 RT-Thread extra.ld 的 section：
+  - `.data.extra`（FSymTab/VSymTab/.rti_fn/UtestTcTab/am_apps.data）放在 .rodata 和 .data 之间，`> PSRAM AT > FLASH`
+  - `.bss.extra`（am_apps.bss）放在 .data 和 .bss 之间，`_bss_start` 移到 .bss.extra 开头
+  - 栈从 SRAM 移到 PSRAM 末尾（32KB），SRAM 仅用于 SSBL
+  - heap 从 _bss_end 到 _stack_pointer - 32K
+- `nemu/src/memory/paddr.c` — TARGET_SHARE 添加 CLINT 地址范围(0x02000000, 64KB)：读返回 0，写忽略
+- RT-Thread 内核 ~185KB bin，编译通过
+- **仿真未验证**：185KB 从 Flash XIP 搬运到 PSRAM 所需仿真周期过多，verilator 仿真不可行，移植正确性待后续验证
+
+### 22. Bootloader 诊断输出（汇编 UART）
+- `am/src/riscv/ysyxsoc/start.S` — 在 bootloader 各阶段添加 UART 字符输出，用于诊断搬运进度
+  - 汇编宏 `uart_init_asm`：FSBL 开头初始化 UART16550（DLAB 设 divisor=1，8N1）
+  - 汇编宏 `uart_putc`：轮询 LSR[5](THRE) 后写 THR
+  - `F` — FSBL 开始执行（UART 初始化完成）
+  - `S` — SSBL 已搬运到 SRAM，即将跳转
+  - `M\n` — 程序已搬运到 PSRAM + .bss 已清零，即将跳转 _trm_init
+- trm.c 中 uart_init() 会重复初始化，无影响
+- dummy 测试验证通过：输出 `FSM` 后正常 PASS
 ```bash
 # 生成 Verilog（含 sed 修正）
 cd sim_soc && make verilog
@@ -241,7 +271,12 @@ cd nemu && make ISA=riscv32 -j$(nproc)
 ```
 
 ## 下一步待办
-1. IOE/CTE 支持（键盘、VGA、时钟中断等）
+1. RT-Thread 仿真验证（需解决 185KB 搬运耗时问题，或上板验证）
+2. 定时器中断（CLINT mtime → 抢占式调度）
+3. DiffTest 适配（CLINT mtime 同步问题）
+
+## 临时修改（后续可恢复）
+- `~/Templates/rt-thread-am/bsp/abstract-machine/integrate-am-apps.py` — 注释掉 `fceux-am`（NES 模拟器），其 ROM 数据占 ~2MB rodata，导致 bin 2.6MB，verilator 仿真搬运耗时不可接受。去掉后纯内核 ~144KB。需要时取消注释即可恢复。
 
 ## 未来优化点（功能稳定后再做）
 - **EXU 拆分**：当前 EXU 混合了 Dispatch/Execute/Arbitration/Redirect/Serialization 五种职责，应拆为独立的 Issue/Dispatch + 各 FU 独立 + Writeback Arbiter
@@ -300,6 +335,21 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - _heap_end 从 0x80001000(4KB) 扩大到 0x80400000(4MB)，去掉 _stack_top
     - start.S：bootloader 搬运整个 SRAM 区域，用 `la + jalr` 绝对跳转到 SRAM（替代 PC-relative 的 call）
     - 程序从 SRAM 单周期取指执行，大幅提升性能（原 Flash XIP 每条指令 ~150 周期）
+28. 二级 Bootloader（FSBL+SSBL）+ 程序运行在 PSRAM：
+    - linker.ld：三段内存（FLASH/SRAM/PSRAM），fsbl(VMA=LMA=Flash)，ssbl(VMA=SRAM, LMA=Flash)，.text/.rodata/.data(VMA=PSRAM, LMA=Flash)
+    - start.S：FSBL(fsbl section) 搬 SSBL 到 SRAM → SSBL(ssbl section) 搬程序到 PSRAM + 清零 .bss → 跳转 _trm_init
+    - 程序突破 SRAM 8KB 限制，可使用完整 4MB PSRAM；栈仍在 SRAM（快速）；heap 从 _bss_end 到 0x80400000
+29. RT-Thread 移植到 ysyxsoc（CTE 协作式调度）：
+    - 添加 CTE 支持：cte.c（ecall yield/timer IRQ）+ trap.S（上下文保存恢复），复制自 npc 平台
+    - linker.ld 合并 RT-Thread extra.ld：.data.extra（FSymTab/VSymTab/.rti_fn/UtestTcTab）+ .bss.extra（am_apps.bss），避免 INSERT BEFORE 与 AT > FLASH 冲突
+    - 栈从 SRAM 移到 PSRAM 末尾 32KB（RT-Thread 线程栈需求远超 SRAM 8KB）
+    - ysyxsoc.mk 过滤掉 extra.ld（LDFLAGS filter-out），避免重复定义 section
+    - NEMU paddr.c 添加 CLINT 地址映射（0x02000000, 64KB）：读返回 0，写忽略
+    - RT-Thread 内核 ~185KB bin 编译通过
+30. Bootloader 诊断输出 + RT-Thread 仿真受限确认：
+    - start.S 添加汇编 UART 宏（uart_init_asm + uart_putc），FSBL/SSBL 各阶段输出 F/S/M 字符
+    - dummy 测试验证通过：输出 `FSM` 后正常 PASS（51952 cycles）
+    - RT-Thread 185KB bin 仿真不可行：Flash XIP 搬运到 PSRAM 所需周期过多，移植正确性待后续验证
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议

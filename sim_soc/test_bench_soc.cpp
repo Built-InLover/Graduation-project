@@ -13,10 +13,6 @@
 #include <dlfcn.h>
 #endif
 
-#ifndef MAX_CYCLES
-#define MAX_CYCLES 20000000
-#endif
-
 // MROM 缓冲区（4KB，与硬件一致）
 static uint8_t mrom_data[4096];
 
@@ -276,17 +272,21 @@ int main(int argc, char **argv) {
 
     printf("--- ysyxSoC Simulation Start ---\n");
 
-    for (int i = 0; i < MAX_CYCLES; i++) {
+#ifdef MAX_CYCLES
+    for (long i = 0; i < MAX_CYCLES; i++) {
+#else
+    for (long i = 0; ; i++) {
+#endif
         one_cycle();
         if (ebreak_flag) {
-            printf("ebreak detected at cycle %d\n", i);
+            printf("ebreak detected at cycle %ld\n", i);
             break;
         }
 #ifdef DIFFTEST_ON
         if (difftest_commit) {
             difftest_commit = false;
             if (!difftest_check()) {
-                printf("[difftest] FAIL at cycle %d\n", i);
+                printf("[difftest] FAIL at cycle %ld\n", i);
 #ifdef TRACE_ON
                 tfp->close();
 #endif
@@ -299,7 +299,11 @@ int main(int argc, char **argv) {
     }
 
     if (!ebreak_flag) {
-        printf("TIMEOUT: no ebreak after %d cycles\n", MAX_CYCLES);
+#ifdef MAX_CYCLES
+        printf("TIMEOUT: no ebreak after %ld cycles\n", (long)MAX_CYCLES);
+#else
+        printf("Simulation ended without ebreak\n");
+#endif
     }
 
     printf("--- ysyxSoC Simulation End (%ld cycles) ---\n", contextp->time() / 2);
