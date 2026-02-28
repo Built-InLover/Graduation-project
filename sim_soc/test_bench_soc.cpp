@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cassert>
+#include <unordered_map>
 
 #ifdef DIFFTEST_ON
 #include <dlfcn.h>
@@ -64,6 +65,18 @@ extern "C" void mrom_read(int32_t addr, int32_t *data) {
 // ebreak 终止机制
 static bool ebreak_flag = false;
 extern "C" void sim_ebreak() { ebreak_flag = true; }
+
+// PSRAM DPI-C（稀疏存储，按需分配）
+// NEMU 侧通过函数指针注入，共享同一块 psram_mem
+static std::unordered_map<uint32_t, uint8_t> psram_mem;
+
+extern "C" void psram_write(int addr, char data) {
+    psram_mem[(uint32_t)addr] = (uint8_t)data;
+}
+extern "C" char psram_read(int addr) {
+    auto it = psram_mem.find((uint32_t)addr);
+    return it != psram_mem.end() ? (char)it->second : 0;
+}
 
 // ==================== DiffTest ====================
 #ifdef DIFFTEST_ON
