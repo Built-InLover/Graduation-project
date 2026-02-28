@@ -176,3 +176,53 @@ forward_sources 本质上是一张分布式的记分牌（Scoreboard）：
 - NEMU filelist.mk 中 CONFIG_TARGET_NATIVE_ELF 会加 -pie 覆盖 -shared，导致产物是 PIE 而非 .so
 - NPC CSR mstatus 初始值必须为 0x1800（MPP=Machine），与 NEMU 一致
 - NPC debug_csr 顺序 [0]=mcause [1]=mepc [2]=mstatus [3]=mtvec；NEMU CSR struct { mtvec, mepc, mstatus, mcause }
+
+## Flash XIP 连续取指排错全记录
+
+### 问题现象
+
+LSU 通过软件驱动 SPI 寄存器单次读 Flash 正常，但切换到 XIP 模式让 IFU 连续从 0x30000000 取指后，CPU 卡死。
+
+### 三层 Bug 叠加
+
+修复过程中发现三个独立的 bug 层层叠加，每修一层才暴露下一层：
+
+#### 第一层：SPI XIP 状态机缺陷（spi_top_apb.v）
+
+**Bug 1 — APB setup phase 误触发**：APB 协议分两拍，setup phase（psel=1, penable=0）和 access phase（psel=1, penable=1）。原来 S_IDLE 只检查了 `in_psel && in_pwrite==0`，没检查 `in_penable`，导致 setup phase 就启动 SPI 传输。单次访问时时序偏差无所谓，连续访问时 setup phase 的误触发和上一次传输尾巴重叠，状态机乱掉。
+
+修复：S_IDLE 转移条件加 `in_penable` 检查。
+
+**Bug 2 — 片选没有清除间隙**：Flash 芯片要求每条命令是完整的 CS 低电平周期（CS↓ → 命令+地址 → 数据 → CS↑）。原状态机完成一次读后直接回 S_IDLE，没有显式拉高 CS。LSU 单次读没问题（两次访问间隔长，CS 自然清除），IFU 连续取指时前一次刚结束下一次立刻到来，CS 没经历高电平间隙，Flash 把新的 0x03 命令当成上一次的后续数据。
+
+修复：新增 S_CLR_SS 状态，每次传输完成先强制 CS 拉高一个周期再进入下一次。
+
+#### 第二层：IFU arvalid 在 fire 后没有及时拉低（IFU.scala）
+
+AXI4 协议中 valid 在握手（valid && ready 同时为高）后应当可以拉低。原来 IFU 的 arvalid 在 fire 后下一拍仍然保持高电平。
+
+之前走 MROM/SRAM 时没问题——这些从机响应快，不会因为 arvalid 多高一拍就多接受请求。但 Flash XIP 路径经过 Rocket-Chip 的 AXI4Fragmenter，这是标准 AXI 从机实现，严格按协议：看到 arvalid 为高就认为有新请求。arvalid 多停留一拍，Fragmenter 多接受一个请求，R 通道回来两个响应，IFU 只期望一个，流水线卡死。
+
+修复：IFU 加三状态机（s_idle → s_ar → s_wait），arvalid 在 fire 的下一拍立刻回到 idle 拉低，限制 outstanding 读请求为 1。同时加 reset 检查避免复位期间误发 AR。
+
+#### 第三层：LSU 写操作阻塞 IFU 的 AR 通道（ysyx_23060000.scala）
+
+原来仲裁器逻辑：LSU 有请求时，IFU 的 AR 通道被完全屏蔽。最早设计时 IFU 和 LSU 共享同一个 AXI4 端口访问同一个 SRAM，互斥是合理的。但 Flash XIP 后，IFU 取指走 Flash（0x30000000），LSU 写走 UART/SRAM（不同地址），AXI4 的读写通道本来独立，仲裁器还是老逻辑把它们耦合了，LSU 一写就把 IFU 的 AR 堵死。
+
+修复：LSU 写操作只占 AW/W 通道，不阻塞 IFU 的 AR 通道。
+
+### 为什么之前测试发现不了
+
+| 条件 | 之前（MROM/SRAM） | Flash XIP 后 |
+|------|-------------------|-------------|
+| 从机响应速度 | 1-2 拍，arvalid 多高一拍无影响 | 慢设备，经过 Fragmenter 严格按协议 |
+| AXI4Fragmenter | 不在路径上 | 在路径上，arvalid 持续高 = 多发请求 |
+| IFU/LSU 访问目标 | 同一从机，互斥合理 | 不同从机，读写通道应独立 |
+| 请求间隔 | 间隔大，掩盖时序缺陷 | 连续取指，间隔压缩到最小 |
+
+### 排错经验
+
+1. **逐层剥离**：慢设备 + 标准总线组件会把主机侧的时序缺陷全部暴露出来。修一个 bug 后如果还不工作，不要怀疑刚才的修复，继续往下找下一层。
+2. **不要为 bug 适配从机**：虽然可以写一个"宽容"的从机来容忍 arvalid 不拉低，但这等于把自己锁死在只能用自己从机的生态里，接入任何第三方 IP 都会出问题。主机遵守协议才是正道。
+3. **仲裁器要区分读写**：AXI4 的 AR 和 AW/W 是独立通道，仲裁器不应该因为 LSU 在写就阻塞 IFU 的读。早期单端口设计的简化逻辑在多从机场景下会变成性能瓶颈甚至死锁。
+4. **波形是最终裁判**：printf 调试只能确认"卡住了"，定位具体是哪个信号、哪一拍出问题必须看波形。重点关注 arvalid/arready 的握手时序和 CS 信号的电平变化。
