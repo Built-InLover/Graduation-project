@@ -74,6 +74,44 @@ extern "C" char psram_read(int addr) {
     return it != psram_mem.end() ? (char)it->second : 0;
 }
 
+// SDRAM DPI-C（稀疏存储，16-bit 数据单位）
+static std::unordered_map<uint32_t, uint16_t> sdram_storage;
+
+extern "C" void sdram_read(uint32_t addr, uint16_t* data) {
+    // addr[24:0] = {ba[1:0], row[12:0], col[9:0]}
+    auto it = sdram_storage.find(addr);
+    if (it != sdram_storage.end()) {
+        *data = it->second;
+    } else {
+        *data = 0;  // 未写入区域返回 0
+    }
+    // printf("[SDRAM] Read addr=0x%07x data=0x%04x\n", addr, *data);
+}
+
+extern "C" void sdram_write(uint32_t addr, uint16_t data, uint8_t dqm) {
+    // dqm[1]=高字节掩码, dqm[0]=低字节掩码（0=写入，1=屏蔽）
+    // 地址格式：{row[12:0], bank[1:0], col[9:0]} = 25-bit
+    uint32_t row = (addr >> 12) & 0x1fff;
+    uint32_t ba = (addr >> 10) & 0x3;
+    uint32_t col = addr & 0x3ff;
+
+    uint16_t old_data = 0;
+    auto it = sdram_storage.find(addr);
+    if (it != sdram_storage.end()) {
+        old_data = it->second;
+    }
+
+    uint16_t new_data = old_data;
+    if (!(dqm & 0x1)) {  // 低字节有效
+        new_data = (new_data & 0xff00) | (data & 0x00ff);
+    }
+    if (!(dqm & 0x2)) {  // 高字节有效
+        new_data = (new_data & 0x00ff) | (data & 0xff00);
+    }
+
+    sdram_storage[addr] = new_data;
+}
+
 // ==================== DiffTest ====================
 #ifdef DIFFTEST_ON
 enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };

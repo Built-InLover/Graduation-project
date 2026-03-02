@@ -245,6 +245,23 @@ cd sim_soc && make verilog
   - `M\n` — 程序已搬运到 PSRAM + .bss 已清零，即将跳转 _trm_init
 - trm.c 中 uart_init() 会重复初始化，无影响
 - dummy 测试验证通过：输出 `FSM` 后正常 PASS
+### 23. SDRAM 颗粒仿真模型 + APB 控制器集成
+- `ysyxSoC/perip/sdram/sdram.v` — MT48LC16M16A2 SDR SDRAM 颗粒行为模型
+  - 容量：256Mbit (16M x 16-bit)，4 banks x 8192 rows x 512 columns x 16-bit
+  - 状态机：S_IDLE → S_ACTIVE → S_READ/S_WRITE → S_READ_DATA/S_WRITE → S_ACTIVE
+  - 命令支持：NOP, ACTIVE, READ, WRITE, PRECHARGE, REFRESH, LOAD_MODE
+  - DPI-C 稀疏存储（C++ `unordered_map<uint32_t, uint16_t>`），16-bit 数据单位
+  - **写采样修复**：S_ACTIVE 收到 WRITE 命令当拍即采样第一个 beat（`write_sample` 信号），后续 beat 在 S_WRITE 采样
+  - **读输出**：组合逻辑驱动（非寄存器），适配 Verilator 零延迟仿真
+  - **行状态修复**：S_READ_DATA/S_WRITE burst 完成后回到 S_ACTIVE（行仍打开），而非 S_IDLE。否则控制器 row-hit 优化跳过 ACTIVATE 时芯片会忽略 READ/WRITE 命令
+- `ysyxSoC/perip/sdram/sdram_top_apb.v` — APB 封装 + sdram_axi_core 控制器
+  - SDRAM_READ_LATENCY=3（补偿反相时钟 + 2 级采样流水线在 Verilator NBA 模型下的延迟）
+  - APB 信号锁存（setup phase 锁存 addr/wdata/strb/write）
+  - 三态状态机：ST_IDLE → ST_WAIT_ACCEPT → ST_WAIT_ACK
+- `sim_soc/test_bench_soc.cpp` — SDRAM DPI-C 桩函数（sdram_read/sdram_write）
+- SDRAM 地址空间：0xa0000000~0xbfffffff（CPU 视角）
+- sdram-mem-test 通过 8/16/32-bit 写读校验，cpu-tests 40/40 全部通过
+
 ```bash
 # 生成 Verilog（含 sed 修正）
 cd sim_soc && make verilog
@@ -350,6 +367,12 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - start.S 添加汇编 UART 宏（uart_init_asm + uart_putc），FSBL/SSBL 各阶段输出 F/S/M 字符
     - dummy 测试验证通过：输出 `FSM` 后正常 PASS（51952 cycles）
     - RT-Thread 185KB bin 仿真不可行：Flash XIP 搬运到 PSRAM 所需周期过多，移植正确性待后续验证
+31. SDRAM 颗粒仿真模型 + 控制器时序调试：
+    - sdram.v 实现 MT48LC16M16A2 行为模型（S_IDLE/S_ACTIVE/S_READ/S_READ_DATA/S_WRITE 状态机）
+    - 写时序修复：WRITE 命令当拍即采样第一个 beat（wire write_sample），不等状态机转移
+    - 读时序修复：dq 输出改组合逻辑（避免 Verilator NBA 竞争），SDRAM_READ_LATENCY=3
+    - 行状态修复：burst 完成后回到 S_ACTIVE（非 S_IDLE），修复背靠背写读失败（控制器 row-hit 跳过 ACTIVATE 时芯片在 S_IDLE 忽略 READ）
+    - sdram-mem-test（8/16/32-bit 256B 校验）通过，cpu-tests 40/40 全部通过
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
