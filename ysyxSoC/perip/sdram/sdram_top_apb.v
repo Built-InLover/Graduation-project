@@ -20,29 +20,13 @@ module sdram_top_apb (
   output        sdram_we,
   output [12:0] sdram_a,
   output [ 1:0] sdram_ba,
-  output [ 3:0] sdram_dqm,
-  inout  [31:0] sdram_dq
+  output [ 1:0] sdram_dqm,
+  inout  [15:0] sdram_dq
 );
 
   wire sdram_dout_en;
-  wire [31:0] sdram_dout;
-  assign sdram_dq = sdram_dout_en ? sdram_dout : 32'bz;
-
-  // 实例化 2 个 SDRAM 颗粒（位扩展：低 16-bit + 高 16-bit）
-  sdram u_sdram_lo (
-    .clk(sdram_clk), .cke(sdram_cke), .cs(sdram_cs),
-    .ras(sdram_ras), .cas(sdram_cas), .we(sdram_we),
-    .a(sdram_a), .ba(sdram_ba),
-    .dqm(sdram_dqm[1:0]),
-    .dq(sdram_dq[15:0])
-  );
-  sdram u_sdram_hi (
-    .clk(sdram_clk), .cke(sdram_cke), .cs(sdram_cs),
-    .ras(sdram_ras), .cas(sdram_cas), .we(sdram_we),
-    .a(sdram_a), .ba(sdram_ba),
-    .dqm(sdram_dqm[3:2]),
-    .dq(sdram_dq[31:16])
-  );
+  wire [15:0] sdram_dout;
+  assign sdram_dq = sdram_dout_en ? sdram_dout : 16'bz;
 
   typedef enum [1:0] { ST_IDLE, ST_WAIT_ACCEPT, ST_WAIT_ACK } state_t;
   reg [1:0] state;
