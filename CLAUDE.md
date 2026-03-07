@@ -268,6 +268,24 @@ cd sim_soc && make verilog
 - SDRAM 地址空间：0xa0000000~0xbfffffff（CPU 视角）
 - sdram-mem-test 通过 8/16/32-bit 写读校验，cpu-tests 40/40 全部通过
 
+### 24. SDRAM 位扩展（16-bit → 32-bit，双颗粒）
+- `ysyxSoC/perip/sdram/sdram.v` — 新增 `CHIP_SEL` 参数（0=低16位颗粒，1=高16位颗粒）
+  - DPI-C 函数名按颗粒区分：`sdram_lo_read/write`（CHIP_SEL=0）、`sdram_hi_read/write`（CHIP_SEL=1）
+- `ysyxSoC/perip/sdram/sdram_top_apb.v` — dq 16→32，dqm 2→4，实例化 2 个颗粒（u_sdram_lo/u_sdram_hi）
+- `ysyxSoC/perip/sdram/core_sdram_axi4/sdram_axi_core.v` — 核心改造：
+  - 数据总线 16→32（`SDRAM_DATA_W=32`），dqm 2→4（`SDRAM_DQM_W=4`）
+  - `MODE_REG` Burst Length 改为 1（原 2），去掉 `STATE_WRITE1`
+  - 写路径：`STATE_WRITE0` 直接发送完整 32-bit，ACK 在同一拍，`STATE_WRITE0 → STATE_IDLE`
+  - 读路径：去掉 `data_buffer_q`，`ram_read_data_w = sample_data_q`（直接 32-bit）
+  - ACK 触发：`rd_q[SDRAM_READ_LATENCY]`（原 `rd_q[SDRAM_READ_LATENCY+1]`）
+- `ysyxSoC/build/ysyxSoCFull.v` — 静态维护：
+  - APBSDRAM 模块端口 dqm [1:0]→[3:0]，dq [15:0]→[31:0]
+  - 顶层端口 sdram_dqm/sdram_dq 同步修改
+  - 内部 wire `_asic_sdram_dqm` [1:0]→[3:0]，`_dq_wire` [15:0]→[31:0]
+  - 单颗粒实例化改为双颗粒（sdram_lo/sdram_hi，分别连接 dqm[1:0]/[3:2] 和 dq[15:0]/[31:16]）
+- `sim_soc/test_bench_soc.cpp` — DPI-C 接口：lo/hi 两个独立 map，`sdram_lo_read/write` + `sdram_hi_read/write`
+- sdram-mem-test 通过，cpu-tests 37/37 全部通过
+
 ```bash
 # 生成 Verilog（含 sed 修正）
 cd sim_soc && make verilog
@@ -379,6 +397,13 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - 读时序修复：dq 输出改组合逻辑（避免 Verilator NBA 竞争），SDRAM_READ_LATENCY=3
     - 行状态修复：burst 完成后回到 S_ACTIVE（非 S_IDLE），修复背靠背写读失败（控制器 row-hit 跳过 ACTIVATE 时芯片在 S_IDLE 忽略 READ）
     - sdram-mem-test（8/16/32-bit 256B 校验）通过，cpu-tests 40/40 全部通过
+32. SDRAM 位扩展（16-bit → 32-bit，双颗粒）：
+    - sdram.v 新增 CHIP_SEL 参数，DPI-C 函数名按颗粒区分（sdram_lo/sdram_hi）
+    - sdram_top_apb.v 实例化 2 个颗粒（u_sdram_lo/u_sdram_hi），dq 16→32，dqm 2→4
+    - sdram_axi_core.v：SDRAM_DATA_W=32，SDRAM_DQM_W=4，MODE_REG BL=1，去掉 STATE_WRITE1，读路径去掉 data_buffer_q，ACK 改为 rd_q[SDRAM_READ_LATENCY]
+    - ysyxSoCFull.v 静态维护：APBSDRAM 端口/顶层端口/内部 wire/颗粒实例化全部更新
+    - test_bench_soc.cpp：lo/hi 两个独立 map，sdram_lo/hi_read/write 四个 DPI-C 函数
+    - sdram-mem-test 通过，cpu-tests 37/37 全部通过
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
