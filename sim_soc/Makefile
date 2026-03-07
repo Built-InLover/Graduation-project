@@ -1,7 +1,7 @@
 .PHONY: default sim clean verilog run
 
 TOPNAME = ysyxSoCFull
-YSYXSOC_HOME = $(abspath ../../ysyxSoC)
+YSYXSOC_HOME = $(abspath ../ysyxSoC)
 NPC_BUILD = $(abspath ../build)
 
 VERILATOR = verilator

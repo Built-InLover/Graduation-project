@@ -7,6 +7,9 @@
 - `playground/src/` — Chisel 源码（CPU 核心）
 - `build/ysyx_23060000.sv` — 生成的 CPU Verilog（需 sed 修正命名）
 - `sim_soc/` — 接入 ysyxSoC 的仿真环境（Makefile + test_bench_soc.cpp）
+- `ysyxSoC/` — ysyxSoC 所需文件（从上游精简复制，只含 build/perip/spec/src，~1.4MB，无 .git）
+  - `build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
+  - `perip/` — 所有外设 Verilog（uart16550/spi/psram/sdram/flash 等）
 - `am/` — AM ysyxsoc 平台文件（源文件在此，abstract-machine 对应位置为软链接）
   - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口
   - `am/scripts/platform/ysyxsoc.mk` — 平台配置
@@ -15,8 +18,7 @@
   - `am/src/riscv/ysyxsoc/cte.c` — CTE 上下文切换（复制自 npc/cte.c）
   - `am/src/riscv/ysyxsoc/trap.S` — 异常入口（复制自 npc/trap.S）
   - `am/src/riscv/ysyxsoc/linker.ld` — 链接脚本
-- `/home/lj/ysyx-workbench/ysyxSoC/` — ysyxSoC 环境
-- `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
+- ~~`/home/lj/ysyx-workbench/ysyxSoC/`~~ — 已迁移到 `ysyxSoC/`（项目内部）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
 ## 当前状态：RT-Thread 移植到 ysyxsoc（CTE 协作式调度）
@@ -107,7 +109,7 @@ cd sim_soc && make verilog
 - **软链接约定**：后续新增 AM ysyxsoc 相关文件，先在 `am/` 下创建，再去 `abstract-machine/` 对应位置加软链接（绝对路径）
 
 ### 8. ysyxSoCFull.v 模块名替换
-- `/home/lj/ysyx-workbench/ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
+- `ysyxSoC/build/ysyxSoCFull.v` 第 1465 行
 - `ysyx_00000000` → `ysyx_23060000`（已用 sed 完成）
 
 ### 9. DiffTest（DPI-C 方案）
