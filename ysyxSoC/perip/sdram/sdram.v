@@ -9,7 +9,9 @@
 // - 写数据在 WRITE 命令当拍就采样（SDR SDRAM 写延迟=0）
 // - 控制器 SDRAM_READ_LATENCY 需设为 3（补偿反相时钟 + 2 级采样流水线）
 
-module sdram(
+module sdram #(
+  parameter CHIP_SEL = 0  // 0=低16位颗粒(lo), 1=高16位颗粒(hi)
+)(
   input        clk,
   input        cke,
   input        cs,
@@ -50,13 +52,23 @@ module sdram(
   reg [2:0]  cas_latency;        // 模式寄存器：CAS Latency（默认 2）
   reg [3:0]  burst_length;       // 模式寄存器：Burst Length（扩展到 4-bit 支持 BL=8）
 
-  // DPI-C 接口声明
-  import "DPI-C" function void sdram_read(
+  // DPI-C 接口声明（lo 颗粒）
+  import "DPI-C" function void sdram_lo_read(
     input int unsigned addr,
     output shortint unsigned data
   );
+  import "DPI-C" function void sdram_lo_write(
+    input int unsigned addr,
+    input shortint unsigned data,
+    input byte unsigned dqm
+  );
 
-  import "DPI-C" function void sdram_write(
+  // DPI-C 接口声明（hi 颗粒）
+  import "DPI-C" function void sdram_hi_read(
+    input int unsigned addr,
+    output shortint unsigned data
+  );
+  import "DPI-C" function void sdram_hi_write(
     input int unsigned addr,
     input shortint unsigned data,
     input byte unsigned dqm
@@ -72,7 +84,10 @@ module sdram(
   // 读数据准备（组合逻辑）
   always @(*) begin
     if (state == S_READ_DATA && cke) begin
-      sdram_read({7'b0, active_row[current_bank], current_bank, col_addr}, dq_out_next);
+      if (CHIP_SEL == 0)
+        sdram_lo_read({7'b0, active_row[current_bank], current_bank, col_addr}, dq_out_next);
+      else
+        sdram_hi_read({7'b0, active_row[current_bank], current_bank, col_addr}, dq_out_next);
     end else begin
       dq_out_next = 16'b0;
     end
@@ -102,7 +117,10 @@ module sdram(
   // 写数据采样（时钟上升沿采样 dq 输入）
   always @(posedge clk) begin
     if (write_sample) begin
-      sdram_write({7'b0, active_row[write_bank], write_bank, write_col}, dq, {6'b0, dqm});
+      if (CHIP_SEL == 0)
+        sdram_lo_write({7'b0, active_row[write_bank], write_bank, write_col}, dq, {6'b0, dqm});
+      else
+        sdram_hi_write({7'b0, active_row[write_bank], write_bank, write_col}, dq, {6'b0, dqm});
     end
   end
 
@@ -145,6 +163,7 @@ module sdram(
                 3'd3: burst_length <= 4'd8;
                 default: burst_length <= 4'd2;
               endcase
+              //$display("[SDRAM%0d] LOAD_MODE a=%0h a[2:0]=%0b -> burst_length=%0d (next)",CHIP_SEL, a, a[2:0], (a[2:0]==0)?1:(a[2:0]==1)?2:(a[2:0]==2)?4:8);
             end
             CMD_PRECHARGE: begin
               if (a[10])
@@ -170,10 +189,10 @@ module sdram(
               state <= S_READ;
             end
             CMD_WRITE: begin
-              col_addr <= a[9:0] + 1;  // 第一个 beat 已在当拍采样，列地址提前递增
-              burst_cnt <= burst_length - 1;  // 第一个 beat 已消费
+              col_addr <= a[9:0] + 1;
+              burst_cnt <= burst_length - 1;
               if (burst_length <= 1)
-                state <= S_IDLE;
+                state <= S_ACTIVE;  // BL=1：行仍打开，回到 S_ACTIVE 等待下一命令
               else
                 state <= S_WRITE;
             end
@@ -221,5 +240,9 @@ module sdram(
       endcase
     end
   end
+
+// 时序追踪（调试用，默认关闭）
+generate if (CHIP_SEL == 0) begin : g_trace
+end endgenerate
 
 endmodule
