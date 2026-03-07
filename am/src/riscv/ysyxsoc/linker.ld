@@ -1,5 +1,5 @@
 /*
- * 地址空间 (Address Space) — 二级 Bootloader + RT-Thread
+ * 地址空间 (Address Space) — 二级 Bootloader + cpu-tests
  * -------------------------------------------------------------------------
  * [FLASH] (0x30000000 - 0x30FFFFFF)  <-- 所有代码/数据的存储区
  * |-----------------------|
@@ -18,35 +18,21 @@
  * -------------------------------------------------------------------------
  *
  * -------------------------------------------------------------------------
- * [SRAM] (0x0f000000 - 0x0f001FFF)  <-- 仅 SSBL 临时执行
+ * [SRAM] (0x0f000000 - 0x0f001FFF)  <-- SSBL + 程序运行 + 栈
  * |-----------------------| <--- 0x0f000000 (_ssbl_start)
  * |     .ssbl VMA         |  <-- SSBL 运行地址 (FSBL 从 Flash 搬来)
  * |-----------------------| <--- _ssbl_end
- * |       (空闲)          |
- * |-----------------------| <--- 0x0f002000
+ * |     .text/.rodata     |  <-- 程序运行地址 (SSBL 从 Flash 搬来)
+ * |     .data/.bss        |
+ * |-----------------------| <--- _stack_pointer (0x0f002000)
+ * |       Stack (栈)      |  <-- 向下增长
  * -------------------------------------------------------------------------
  *
  * -------------------------------------------------------------------------
- * [PSRAM] (0x80000000 - 0x803FFFFF)  <-- 程序运行 + 栈 + 堆
- * |-----------------------| <--- 0x80000000 (_psram_start)
- * |     .text VMA         |  <-- 程序代码运行地址 (SSBL 从 Flash 搬来)
- * |-----------------------|
- * |     .rodata VMA       |
- * |-----------------------|
- * |     .data.extra VMA   |  <-- RT-Thread: FSymTab/VSymTab/.rti_fn/UtestTcTab/am_apps.data
- * |-----------------------|
- * |     .data/.sdata VMA  |
- * |-----------------------| <--- _data_end
- * |     .bss.extra        |  <-- RT-Thread: am_apps.bss
- * |-----------------------|
- * |       .bss            |
- * |-----------------------| <--- _bss_end
- * |          |            |
- * |          V            |
- * |       Stack (栈)      |  <-- 向下增长, 32KB
- * |-----------------------| <--- _stack_pointer (0x80400000)
- * |       Heap (堆)       |  <-- _bss_end ~ _heap_end (栈底之前)
- * |-----------------------| <--- _heap_end (_stack_pointer - 32K)
+ * [SDRAM] (0xa0000000 - 0xa03FFFFF)  <-- Heap / 测试内存
+ * |-----------------------| <--- 0xa0000000 (_heap_start)
+ * |       Heap (堆)       |
+ * |-----------------------| <--- 0xa0400000 (_heap_end)
  * -------------------------------------------------------------------------
  */
 
@@ -55,16 +41,14 @@ ENTRY(_start)
 MEMORY {
   FLASH (rx)  : ORIGIN = 0x30000000, LENGTH = 16M
   SRAM  (rwx) : ORIGIN = 0x0f000000, LENGTH = 8K
-  PSRAM (rwx) : ORIGIN = 0x80000000, LENGTH = 4M
+  SDRAM (rwx) : ORIGIN = 0xa0000000, LENGTH = 4M
 }
 
 SECTIONS {
-  /* FSBL: VMA=LMA=Flash, XIP 执行 */
   .fsbl : {
     *(fsbl)
   } > FLASH
 
-  /* SSBL: VMA=SRAM, LMA=Flash, FSBL 搬运 */
   .ssbl : {
     _ssbl_start = .;
     *(ssbl)
@@ -72,21 +56,18 @@ SECTIONS {
   } > SRAM AT > FLASH
   _ssbl_lma = LOADADDR(.ssbl);
 
-  /* 程序: VMA=PSRAM, LMA=Flash, SSBL 搬运 */
   .text : {
-    _psram_start = .;
+    _sram_start = .;
     *(.text*)
-  } > PSRAM AT > FLASH
+  } > SRAM AT > FLASH
 
   .rodata : {
     *(.rodata*)
     . = ALIGN(4);
-  } > PSRAM AT > FLASH
+  } > SRAM AT > FLASH
 
-  /* RT-Thread 特殊 data section（INSERT BEFORE .data 的等价物） */
   .data.extra : {
     . = ALIGN(8);
-    /* finsh shell */
     __fsymtab_start = .;
     KEEP(*(FSymTab))
     __fsymtab_end = .;
@@ -96,35 +77,31 @@ SECTIONS {
     __vsymtab_end = .;
     . = ALIGN(8);
 
-    /* RT-Thread auto-init */
     __rt_init_start = .;
     KEEP(*(SORT(.rti_fn*)))
     __rt_init_end = .;
     . = ALIGN(8);
 
-    /* utest */
     __rt_utest_tc_tab_start = .;
     KEEP(*(UtestTcTab))
     __rt_utest_tc_tab_end = .;
 
-    /* AM apps data */
     . = ALIGN(8);
     __am_apps_data_start = .;
     *(__am_apps.data*)
     *(__am_apps.sdata*)
     __am_apps_data_end = .;
     . = ALIGN(8);
-  } > PSRAM AT > FLASH
+  } > SRAM AT > FLASH
 
   .data : {
     _data_start = .;
     *(.data*)
     *(.sdata*)
     _data_end = .;
-  } > PSRAM AT > FLASH
-  _psram_lma = LOADADDR(.text);
+  } > SRAM AT > FLASH
+  _sram_lma = LOADADDR(.text);
 
-  /* RT-Thread 特殊 bss section（INSERT BEFORE .bss 的等价物） */
   .bss.extra : {
     _bss_start = .;
     . = ALIGN(8);
@@ -134,16 +111,17 @@ SECTIONS {
     *(__am_apps.scommon*)
     __am_apps_bss_end = .;
     . = ALIGN(8);
-  } > PSRAM
+  } > SRAM
 
   .bss : {
     *(.bss*)
     *(.sbss*)
     *(.scommon)
     _bss_end = .;
-  } > PSRAM
+  } > SRAM
 
-  _heap_start    = _bss_end;
-  _stack_pointer = ORIGIN(PSRAM) + LENGTH(PSRAM);
-  _heap_end      = _stack_pointer - 32K;
+  _heap_start         = ORIGIN(SDRAM);
+  _boot_stack_pointer = ORIGIN(SRAM) + LENGTH(SRAM);
+  _stack_pointer      = ORIGIN(SDRAM) + LENGTH(SDRAM);
+  _heap_end           = _stack_pointer - 32K;
 }

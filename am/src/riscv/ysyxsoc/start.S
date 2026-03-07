@@ -13,31 +13,27 @@
   sb   t2, 3(t1)         # LCR = 0x03
 .endm
 
-# 轮询 LSR[5](THRE) 后写字符到 THR
 .macro uart_putc ch
   li   t1, 0x10000000
   li   t3, \ch
 1983:
-  lbu  t2, 5(t1)         # LSR
-  andi t2, t2, 0x20      # THRE bit
+  lbu  t2, 5(t1)
+  andi t2, t2, 0x20
   beqz t2, 1983b
-  sb   t3, 0(t1)         # THR
+  sb   t3, 0(t1)
 .endm
 
-# ===== FSBL: Flash XIP 执行 =====
 .section fsbl, "ax"
 .globl _start
 .type _start, @function
 
 _start:
   mv s0, zero
-  la sp, _stack_pointer
+  la sp, _boot_stack_pointer
 
-  # 初始化 UART（后续 trm.c 会重复初始化，无影响）
   uart_init_asm
-  uart_putc 'F'           # FSBL started
+  uart_putc 'F'
 
-  # 搬运 SSBL 从 Flash(LMA) 到 SRAM(VMA)
   la a0, _ssbl_start
   la a1, _ssbl_lma
   la a2, _ssbl_end
@@ -49,21 +45,19 @@ _start:
   addi a1, a1, 4
   j 1b
 2:
-  uart_putc 'S'           # SSBL copied to SRAM
+  uart_putc 'S'
 
-  # 跳转到 SRAM 中的 SSBL
   la t0, _ssbl_entry
   jalr zero, t0, 0
 
-# ===== SSBL: SRAM 执行 =====
 .section ssbl, "ax"
 .globl _ssbl_entry
 .type _ssbl_entry, @function
 
 _ssbl_entry:
-  # 搬运 .text+.rodata+.data 从 Flash(LMA) 到 PSRAM(VMA)
-  la a0, _psram_start
-  la a1, _psram_lma
+  # 搬运 .text+.rodata+.data 从 Flash(LMA) 到 SRAM(VMA)
+  la a0, _sram_start
+  la a1, _sram_lma
   la a2, _data_end
 1:
   bge a0, a2, 2f
@@ -83,9 +77,11 @@ _ssbl_entry:
   addi a0, a0, 4
   j 3b
 4:
-  uart_putc 'M'           # Main program ready in PSRAM
+  la sp, _stack_pointer
+
+  uart_putc 'M'
   uart_putc '\n'
 
-  # 跳转到 PSRAM 中的 _trm_init
+  # 跳转到 SRAM 中的 _trm_init
   la t0, _trm_init
   jalr ra, t0, 0
