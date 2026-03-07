@@ -8,8 +8,12 @@
 - `build/ysyx_23060000.sv` — 生成的 CPU Verilog（需 sed 修正命名）
 - `sim_soc/` — 接入 ysyxSoC 的仿真环境（Makefile + test_bench_soc.cpp）
 - `ysyxSoC/` — ysyxSoC 所需文件（从上游精简复制，只含 build/perip/spec/src，~1.4MB，无 .git）
-  - `build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）
+  - `build/ysyxSoCFull.v` — SoC 顶层（已替换 ysyx_00000000 → ysyx_23060000）**静态维护，直接编辑 .v**
   - `perip/` — 所有外设 Verilog（uart16550/spi/psram/sdram/flash 等）
+  - `src/` — ysyxSoC Chisel 源码（仅供参考，**不在此重新生成**）
+  - ⚠️ **重新生成 ysyxSoCFull.v 须去 `/home/lj/ysyx-workbench/ysyxSoC/` 执行 `make verilog`**
+    - 依赖 rocket-chip/dependencies/diplomacy（Diplomacy 框架）+ firtool，本项目不含这些
+    - 生成后手动复制 `build/ysyxSoCFull.v` 到本项目 `ysyxSoC/build/`，并重新 sed 替换模块名
 - `am/` — AM ysyxsoc 平台文件（源文件在此，abstract-machine 对应位置为软链接）
   - `am/scripts/riscv32im-ysyxsoc.mk` — ARCH 入口
   - `am/scripts/platform/ysyxsoc.mk` — 平台配置
