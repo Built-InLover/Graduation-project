@@ -25,12 +25,14 @@
 - ~~`/home/lj/ysyx-workbench/ysyxSoC/`~~ — 已迁移到 `ysyxSoC/`（项目内部）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：RT-Thread 移植到 ysyxsoc（CTE 协作式调度）
+## 当前状态：SDRAM 位扩展完成（双颗粒 32-bit，cpu-tests 37/37）
 
 CPU 复位 PC 为 0x30000000（Flash），采用二级 Bootloader 启动：
 1. FSBL（fsbl section，Flash XIP 执行）：搬运 SSBL 从 Flash(LMA) 到 SRAM(VMA)，跳转到 SRAM
 2. SSBL（ssbl section，SRAM 执行）：搬运 .text+.rodata+.data 从 Flash(LMA) 到 PSRAM(VMA)，清零 .bss，跳转到 PSRAM 中的 _trm_init
 3. 程序在 PSRAM(0x80000000) 执行，栈在 PSRAM 末尾（32KB），heap 在 .bss 之后到栈底
+
+SDRAM 已完成位扩展：双颗粒并联（lo CHIP_SEL=0 + hi CHIP_SEL=1），数据总线 32-bit，BL=1，一次 READ/WRITE 命令完成 32-bit 传输。cpu-tests 37/37 全部通过。
 
 RT-Thread 内核 ~185KB，运行在 PSRAM。CTE 支持已添加（cte.c + trap.S），协作式调度（ecall yield）。
 栈从 SRAM 移到 PSRAM（RT-Thread 线程栈需求远超 SRAM 8KB），SRAM 仅用于 SSBL 临时执行。
@@ -251,7 +253,7 @@ cd sim_soc && make verilog
   - `M\n` — 程序已搬运到 PSRAM + .bss 已清零，即将跳转 _trm_init
 - trm.c 中 uart_init() 会重复初始化，无影响
 - dummy 测试验证通过：输出 `FSM` 后正常 PASS
-### 23. SDRAM 颗粒仿真模型 + APB 控制器集成
+### 23. SDRAM 颗粒仿真模型 + APB 控制器集成（单颗粒 16-bit，已被 §24 取代）
 - `ysyxSoC/perip/sdram/sdram.v` — MT48LC16M16A2 SDR SDRAM 颗粒行为模型
   - 容量：256Mbit (16M x 16-bit)，4 banks x 8192 rows x 512 columns x 16-bit
   - 状态机：S_IDLE → S_ACTIVE → S_READ/S_WRITE → S_READ_DATA/S_WRITE → S_ACTIVE
@@ -259,7 +261,7 @@ cd sim_soc && make verilog
   - DPI-C 稀疏存储（C++ `unordered_map<uint32_t, uint16_t>`），16-bit 数据单位
   - **写采样修复**：S_ACTIVE 收到 WRITE 命令当拍即采样第一个 beat（`write_sample` 信号），后续 beat 在 S_WRITE 采样
   - **读输出**：组合逻辑驱动（非寄存器），适配 Verilator 零延迟仿真
-  - **行状态修复**：S_READ_DATA/S_WRITE burst 完成后回到 S_ACTIVE（行仍打开），而非 S_IDLE。否则控制器 row-hit 优化跳过 ACTIVATE 时芯片会忽略 READ/WRITE 命令
+  - **行状态修复**：S_READ_DATA/S_WRITE burst 完成后回到 S_ACTIVE（行仍打开），而非 S_IDLE
 - `ysyxSoC/perip/sdram/sdram_top_apb.v` — APB 封装 + sdram_axi_core 控制器
   - SDRAM_READ_LATENCY=3（补偿反相时钟 + 2 级采样流水线在 Verilator NBA 模型下的延迟）
   - APB 信号锁存（setup phase 锁存 addr/wdata/strb/write）
@@ -267,6 +269,19 @@ cd sim_soc && make verilog
 - `sim_soc/test_bench_soc.cpp` — SDRAM DPI-C 桩函数（sdram_read/sdram_write）
 - SDRAM 地址空间：0xa0000000~0xbfffffff（CPU 视角）
 - sdram-mem-test 通过 8/16/32-bit 写读校验，cpu-tests 40/40 全部通过
+
+### 24. SDRAM 位扩展（16→32-bit，双颗粒并联）
+- `ysyxSoC/perip/sdram/sdram.v` — 添加 `CHIP_SEL` 参数（0=lo/1=hi），lo/hi 颗粒各用独立 DPI-C 函数（sdram_lo_read/write、sdram_hi_read/write）；BL=1 时 WRITE 后回到 S_ACTIVE（行保持打开，支持控制器 row-hit 优化）
+- `ysyxSoC/perip/sdram/core_sdram_axi4/sdram_axi_core.v` — 核心改造：
+  - 数据总线 16→32-bit，DQM 2→4-bit，MODE_REG BL=1（原 BL=2）
+  - 删除 STATE_WRITE1、data_buffer_q、dqm_buffer_q（不再需要两拍拼接）
+  - 新增 `write_data_latch_q`/`write_dqm_latch_q`：在 STATE_IDLE 接受写请求时锁存，STATE_WRITE0 使用锁存值，避免 ACTIVATE/DELAY 期间 `inport_wr_i` 失效导致 DQM 全屏蔽
+  - 地址位域修正：32-bit 位扩展后每列地址对应 4 字节，addr_col/bank/row 位域均右移 1 位
+  - 读路径：删除第二级采样寄存器（sample_data_q），直接用 sample_data0_q；ACK 在 rd_q[SDRAM_READ_LATENCY] 触发
+- `ysyxSoC/perip/sdram/sdram_top_apb.v` — dq 16→32-bit，dqm 2→4-bit；移除颗粒实例化（颗粒只在 ysyxSoCFull.v 顶层实例化）
+- `ysyxSoC/build/ysyxSoCFull.v` — APBSDRAM 模块端口/顶层端口/内部 wire 扩宽；单颗粒替换为双颗粒（sdram_lo CHIP_SEL=0 + sdram_hi CHIP_SEL=1，共享所有控制信号，dq/dqm 各占一半）
+- `sim_soc/test_bench_soc.cpp` — lo/hi 独立存储 map（`unordered_map<uint32_t, uint16_t>`），四个 DPI-C 函数
+- sdram-mem-test 通过（8/16/32-bit），cpu-tests 37/37 全部通过
 
 ```bash
 # 生成 Verilog（含 sed 修正）
@@ -379,6 +394,13 @@ cd nemu && make ISA=riscv32 -j$(nproc)
     - 读时序修复：dq 输出改组合逻辑（避免 Verilator NBA 竞争），SDRAM_READ_LATENCY=3
     - 行状态修复：burst 完成后回到 S_ACTIVE（非 S_IDLE），修复背靠背写读失败（控制器 row-hit 跳过 ACTIVATE 时芯片在 S_IDLE 忽略 READ）
     - sdram-mem-test（8/16/32-bit 256B 校验）通过，cpu-tests 40/40 全部通过
+32. SDRAM 位扩展（16→32-bit，双颗粒并联）：
+    - sdram.v 添加 CHIP_SEL 参数，lo/hi 颗粒各用独立 DPI-C；BL=1 时 WRITE 后回 S_ACTIVE（支持 row-hit）
+    - sdram_axi_core.v：数据总线 32-bit，DQM 4-bit，MODE_REG BL=1，删除 STATE_WRITE1/data_buffer_q/dqm_buffer_q
+    - 关键 bug 修复：STATE_IDLE 锁存 write_data/write_dqm，避免 ACTIVATE/DELAY 期间 inport_wr_i 失效导致 DQM 全屏蔽
+    - 地址位域修正：32-bit 每列 4 字节，addr_col/bank/row 位域右移 1 位
+    - ysyxSoCFull.v 双颗粒实例化（sdram_lo + sdram_hi），test_bench_soc.cpp lo/hi 独立存储 map
+    - cpu-tests 37/37 全部通过
 
 ## 已清理的旧文件（已删除，可通过 git 历史恢复）
 - `common/AXI4Lite.scala`、`common/SimpleBus.scala` — 旧总线协议
