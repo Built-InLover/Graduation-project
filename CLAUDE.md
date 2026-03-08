@@ -408,3 +408,24 @@ cd nemu && make ISA=riscv32 -j$(nproc)
 - `top/main.scala` — 旧入口点（已被 main_ysyxsoc.scala 替代）
 - `sim_soc/char-test.c`、`sim_soc/char-test-sram.c`、`sim_soc/flash-loader.c`、`sim_soc/sram.ld` — 被 XIP 方案取代
 - `sim_soc/xip-jump.c`、`sim_soc/char-test-flash.c`、`sim_soc/flash.ld`、`sim_soc/mrom.ld` — 被 Flash 直接启动取代（不再需要 MROM 跳板）
+33. SDRAM 多 bank / 多行调试复盘（PSRAM 执行，SDRAM 仅做数据读写验证）：
+    - 调试背景：为避免“程序本身搬到 SDRAM 后又覆盖测试区”影响结论，切回“程序运行在 PSRAM，单独用 `sdram-mem-test` 读写 SDRAM”的模式排查。
+    - 缩点策略：先把 `sdram-mem-test` 从大范围扫描缩到 16KB、1KB，最终缩到只盯 `0xa0001000` 与 `0xa0003000` 两个地址；再加前缀写 / 前缀读扫描，确认问题不是简单边界越界，而是与 bank/row 状态切换有关。
+    - 现象 1：`0xa0003000` 的 32-bit 模式值 `0x9e8c8ddf` 会出现在 `0xa0001000`；典型报错为 `!@00001000:9e8c8ddf/caa429df`，说明 `0x3000` 的内容覆盖到了 `0x1000`。
+    - 现象 2：控制器日志显示 `cpu=a0003000 -> row=1 bank=2 col=0`，但芯片日志实际写入到了 `local=0x00000800 (row=0 bank=2 col=0)`，而不是期望的 `local=0x00001800`。
+    - 坑 1（已修复）：`ysyxSoC/perip/sdram/sdram.v` 在 `S_ACTIVE` 下处理 `CMD_READ/CMD_WRITE` 时没有同步更新 `current_bank`。结果是 row-hit 场景下读写可能沿用上一次 bank，最小双地址复现（如 `0xa0000800` / `0xa0001004`）会直接串地址。修复：`CMD_READ` / `CMD_WRITE` 分支都补上 `current_bank <= ba`。
+    - 坑 2（已修复）：`ysyxSoC/perip/sdram/sdram.v` 在 `S_ACTIVE` 下处理 `CMD_PRECHARGE` 时错误地关闭了 `row_open[current_bank]`，而不是当前命令指定的 `row_open[ba]`。这会在切 bank 时留下错误的 open-row 状态。修复：改为 `row_open[ba] <= 1'b0`，并同步 `current_bank <= ba`。
+    - 坑 3（核心根因，已修复）：SDRAM 芯片模型在 `S_ACTIVE` 状态下根本不处理新的 `CMD_ACTIVE`。真实 SDRAM 允许“bank0 仍打开时，再 ACTIVATE bank2 的另一行”，控制器也是这么做的；但模型把这条 ACT 吃掉了，导致后续 `WRITE a0003000` 仍落在旧的 `row0`。修复：在 `S_ACTIVE` 增加 `CMD_ACTIVE` 分支，正确更新 `active_row[ba] / row_open[ba] / current_bank`。
+    - 坑 4（防御性修复，已保留）：`ysyxSoC/perip/sdram/core_sdram_axi4/sdram_axi_core.v` 原先只锁存了 `write_data/write_dqm`，没有锁存请求地址；`ACTIVATE / PRECHARGE / READ / WRITE` 这些过程态直接读裸 `ram_addr_w`，理论上可能受上游未 accept 请求切换影响。修复：新增 `req_addr_latch_q`，过程态统一使用锁存地址驱动 `addr_q / bank_q`，并同步用于调试打印。
+    - 调试踩坑：
+      - 一开始把 `ACTIVE/PRECHARGE` 全量日志打开后，输出被 bank2 行切换刷屏，真正的首个错误点反而被淹没。
+      - 后来改成只保留 `WRITE / READ_CMD / READ_DAT / ACK`，并只跟踪 `0x1000/0x3000`（对应 local `0x800/0x1800`），问题才真正收敛。
+      - 只看大范围失败现象很容易误判成“地址位域算错 / 超边界”；实际根因是 bank 状态机和多 bank ACT 行为不完整。
+    - 当前验证结论：
+      - 缩小双地址复现已通过：`0xa0003000` 现在稳定写到 `local=0x00001800`，不再覆盖 `0x00000800`。
+      - 已把 `sdram-mem-test` 改成大范围 32-bit 全扫版，当前先验证到 `64KB` 区间写读全通过。
+      - `1MB` 全扫版也已恢复过，但在 Verilator 下耗时较长，后续可继续挂长测；当前已知根因链路已经打通。
+    - 经验总结：
+      - SDRAM bank/row 状态不能只用“一个 current_bank”去近似，凡是 `READ/WRITE/PRECHARGE/ACTIVE` 命令都必须以当前命令携带的 `ba` 为准。
+      - 行为模型若只覆盖“单 bank 打开 -> 同 bank 访问”的最简路径，很容易在更真实的多 bank 调度下暴露假 bug。
+      - 调试内存控制器时，先缩成“两地址 + 一种数据宽度 + 精准日志”，比直接跑 1MB 全扫更容易定位根因。

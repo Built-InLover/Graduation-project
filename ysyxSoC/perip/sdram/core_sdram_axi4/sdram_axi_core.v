@@ -158,7 +158,10 @@ reg [SDRAM_DQM_W-1:0]  dqm_q;
 reg                    cke_q;
 reg [SDRAM_BANK_W-1:0] bank_q;
 
-// 写操作锁存：在 STATE_IDLE 接受请求时锁存，STATE_WRITE0 使用锁存值
+// 请求锁存：过程态使用锁存地址，避免 AXI 侧地址在未 accept 时抖动
+reg [31:0]             req_addr_latch_q;
+
+// 写操作锁存：在请求进入控制器时锁存，STATE_WRITE0 使用锁存值
 reg [SDRAM_DATA_W-1:0] write_data_latch_q;
 reg [SDRAM_DQM_W-1:0]  write_dqm_latch_q;
 
@@ -180,6 +183,19 @@ reg  [STATE_W-1:0]     delay_state_q;
 wire [SDRAM_ROW_W-1:0]  addr_col_w  = {{(SDRAM_ROW_W-SDRAM_COL_W){1'b0}}, ram_addr_w[SDRAM_COL_W+1:2]};
 wire [SDRAM_ROW_W-1:0]  addr_row_w  = ram_addr_w[SDRAM_ADDR_W+1:SDRAM_COL_W+4];
 wire [SDRAM_BANK_W-1:0] addr_bank_w = ram_addr_w[SDRAM_COL_W+3:SDRAM_COL_W+2];
+
+wire [SDRAM_ROW_W-1:0]  addr_col_latch_w  = {{(SDRAM_ROW_W-SDRAM_COL_W){1'b0}}, req_addr_latch_q[SDRAM_COL_W+1:2]};
+wire [SDRAM_ROW_W-1:0]  addr_row_latch_w  = req_addr_latch_q[SDRAM_ADDR_W+1:SDRAM_COL_W+4];
+wire [SDRAM_BANK_W-1:0] addr_bank_latch_w = req_addr_latch_q[SDRAM_COL_W+3:SDRAM_COL_W+2];
+
+`ifdef verilator
+localparam [31:0] DBG_ADDR_A = 32'ha0001000;
+localparam [31:0] DBG_ADDR_B = 32'ha0003000;
+wire dbg_hit_w = (req_addr_latch_q == DBG_ADDR_A) || (req_addr_latch_q == DBG_ADDR_B);
+reg [31:0] dbg_issue_addr_q;
+reg        dbg_issue_is_read_q;
+reg        dbg_issue_valid_q;
+`endif
 
 //-----------------------------------------------------------------
 // SDRAM State Machine
@@ -475,6 +491,7 @@ begin
     cke_q           <= 1'b0;
     dqm_q           <= {SDRAM_DQM_W{1'b0}};
     data_rd_en_q    <= 1'b1;
+    req_addr_latch_q   <= 32'b0;
     write_data_latch_q <= {SDRAM_DATA_W{1'b0}};
     write_dqm_latch_q  <= {SDRAM_DQM_W{1'b1}};
 
@@ -497,6 +514,9 @@ begin
         bank_q       <= {SDRAM_BANK_W{1'b0}};
         data_rd_en_q <= 1'b1;
         // 在接受写请求时锁存数据和 DQM（此时 inport_wr_i/inport_write_data_i 有效）
+        if (ram_req_w)
+            req_addr_latch_q <= ram_addr_w;
+
         if (ram_req_w && (ram_wr_w != 4'b0)) begin
             write_data_latch_q <= ram_write_data_w;
             write_dqm_latch_q  <= ~ram_wr_w[3:0];
@@ -555,11 +575,11 @@ begin
     begin
         // Select a row and activate it
         command_q     <= CMD_ACTIVE;
-        addr_q        <= addr_row_w;
-        bank_q        <= addr_bank_w;
+        addr_q        <= addr_row_latch_w;
+        bank_q        <= addr_bank_latch_w;
 
-        active_row_q[addr_bank_w]  <= addr_row_w;
-        row_open_q[addr_bank_w]    <= 1'b1;
+        active_row_q[addr_bank_latch_w]  <= addr_row_latch_w;
+        row_open_q[addr_bank_latch_w]    <= 1'b1;
     end
     //-----------------------------------------
     // STATE_PRECHARGE
@@ -579,9 +599,9 @@ begin
             // Precharge specific banks
             command_q           <= CMD_PRECHARGE;
             addr_q[ALL_BANKS]   <= 1'b0;
-            bank_q              <= addr_bank_w;
+            bank_q              <= addr_bank_latch_w;
 
-            row_open_q[addr_bank_w] <= 1'b0;
+            row_open_q[addr_bank_latch_w] <= 1'b0;
         end
     end
     //-----------------------------------------
@@ -600,8 +620,8 @@ begin
     STATE_READ :
     begin
         command_q   <= CMD_READ;
-        addr_q      <= addr_col_w;
-        bank_q      <= addr_bank_w;
+        addr_q      <= addr_col_latch_w;
+        bank_q      <= addr_bank_latch_w;
 
         // Disable auto precharge (auto close of row)
         addr_q[AUTO_PRECHARGE]  <= 1'b0;
@@ -615,8 +635,8 @@ begin
     STATE_WRITE0 :
     begin
         command_q       <= CMD_WRITE;
-        addr_q          <= addr_col_w;
-        bank_q          <= addr_bank_w;
+        addr_q          <= addr_col_latch_w;
+        bank_q          <= addr_bank_latch_w;
         // 使用锁存值（STATE_IDLE 时锁存，避免 ACTIVATE/DELAY 期间 inport_wr_i 失效）
         data_q          <= write_data_latch_q;
 
@@ -627,6 +647,9 @@ begin
         dqm_q           <= write_dqm_latch_q;
 
         // 背靠背写（row-hit）：立即锁存下一个写请求
+        if (ram_req_w)
+            req_addr_latch_q <= ram_addr_w;
+
         if (ram_req_w && (ram_wr_w != 4'b0)) begin
             write_data_latch_q <= ram_write_data_w;
             write_dqm_latch_q  <= ~ram_wr_w[3:0];
@@ -635,9 +658,50 @@ begin
         data_rd_en_q    <= 1'b0;
     end
     endcase
+
+    if ((state_q == STATE_READ_WAIT) && !refresh_q && ram_req_w && ram_rd_w) begin
+        if (row_open_q[addr_bank_w] && addr_row_w == active_row_q[addr_bank_w])
+            req_addr_latch_q <= ram_addr_w;
+    end
+    else if ((state_q == STATE_WRITE0) && !refresh_q && ram_req_w && (ram_wr_w != 4'b0)) begin
+        if (row_open_q[addr_bank_w] && addr_row_w == active_row_q[addr_bank_w])
+            req_addr_latch_q <= ram_addr_w;
+    end
 end
 
 //-----------------------------------------------------------------
+`ifdef verilator
+always @ (posedge clk_i or posedge rst_i) begin
+if (rst_i) begin
+    dbg_issue_addr_q    <= 32'h0;
+    dbg_issue_is_read_q <= 1'b0;
+    dbg_issue_valid_q   <= 1'b0;
+end
+else begin
+    if (state_q == STATE_READ && dbg_hit_w) begin
+        dbg_issue_addr_q    <= req_addr_latch_q;
+        dbg_issue_is_read_q <= 1'b1;
+        dbg_issue_valid_q   <= 1'b1;
+        // DEBUG OFF: $display("[SDRAM_CTRL] READ  cpu=%08x row=%0d bank=%0d col=%0d sample=%08x row_open=%b", req_addr_latch_q, addr_row_latch_w, addr_bank_latch_w, addr_col_latch_w[9:0], sample_data0_q, row_open_q);
+    end
+    if (state_q == STATE_WRITE0 && dbg_hit_w) begin
+        dbg_issue_addr_q    <= req_addr_latch_q;
+        dbg_issue_is_read_q <= 1'b0;
+        dbg_issue_valid_q   <= 1'b1;
+        // DEBUG OFF: $display("[SDRAM_CTRL] WRITE cpu=%08x row=%0d bank=%0d col=%0d data=%08x dqm=%x row_open=%b", req_addr_latch_q, addr_row_latch_w, addr_bank_latch_w, addr_col_latch_w[9:0], write_data_latch_q, write_dqm_latch_q, row_open_q);
+    end
+    if (ack_q && dbg_issue_valid_q) begin
+        // DEBUG OFF:
+        // if (dbg_issue_is_read_q)
+        //     $display("[SDRAM_CTRL] ACK_R cpu=%08x data=%08x", dbg_issue_addr_q, sample_data0_q);
+        // else
+        //     $display("[SDRAM_CTRL] ACK_W cpu=%08x", dbg_issue_addr_q);
+        dbg_issue_valid_q <= 1'b0;
+    end
+end
+end
+`endif
+
 // Record read events
 //-----------------------------------------------------------------
 reg [SDRAM_READ_LATENCY:0]  rd_q;
