@@ -429,3 +429,30 @@ cd nemu && make ISA=riscv32 -j$(nproc)
       - SDRAM bank/row 状态不能只用“一个 current_bank”去近似，凡是 `READ/WRITE/PRECHARGE/ACTIVE` 命令都必须以当前命令携带的 `ba` 为准。
       - 行为模型若只覆盖“单 bank 打开 -> 同 bank 访问”的最简路径，很容易在更真实的多 bank 调度下暴露假 bug。
       - 调试内存控制器时，先缩成“两地址 + 一种数据宽度 + 精准日志”，比直接跑 1MB 全扫更容易定位根因。
+34. 关于不对齐访存（unaligned access）的进一步结论：
+    - 重新检查 AM 构建脚本后确认：外部 `abstract-machine/scripts/isa/riscv.mk` 默认带有 `-mstrict-align`，因此 C 编译器不会主动生成真正的 misaligned `lw/sw`，而是会退化成若干 `sb/lbu` 等安全访问序列。
+    - `cpu-tests/unalign` 的反汇编也印证了这一点：源码虽然写的是 `*((volatile unsigned *)(buf + 3))`，但最终代码并不是直接发 misaligned `sw/lw`，而是拆成 4 次 `sb` + 4 次 `lbu` + 软件拼接。
+    - 因此，`unalign` 通过并不能证明“SDRAM 路径已经支持真实的跨 32-bit 边界 misaligned 单拍访问”；它证明的是：
+      - 编译器在 `-mstrict-align` 下规避了这类指令；
+      - 当前 LSU / 总线 / SDRAM 路径的 byte-lane / `WSTRB` / `DQM` 机制是通的。
+    - 当前 LSU 已经具备“同一个 32-bit word 内偏移访问”的基础处理：
+      - 通过 `addr[1:0]` 计算 `offset`
+      - 写路径把 `wdata` 左移到对应 byte lane
+      - 写路径把 `wmask/strb` 左移到对应 byte lane
+      - 读路径对返回的 32-bit 数据按 `offset` 右移后再做符号/零扩展
+    - 这意味着：
+      - **不跨 32-bit 边界** 的 byte/halfword 偏移访问，当前方案可以自然工作；
+      - **跨 32-bit 边界** 的真实 misaligned word/halfword 访问，当前方案并不完整，不能只靠 SDRAM 控制器或颗粒模型来“自动修正”。
+    - 核心职责划分：
+      - SDRAM 控制器只应该处理“对齐后的一个 32-bit beat + byte mask(DQM/WSTRB)”；
+      - 如果要支持真实 misaligned 访存，应该由 **LSU** 在总线前完成地址对齐、数据/掩码移位、必要时拆成两拍；
+      - 如果不打算支持，则也应该由 **LSU/异常路径** 在源头直接判定 misaligned trap，而不是把问题留给 SDRAM 侧。
+    - 更具体地说：
+      - 对于 `sb/sh` 或未跨界的偏移写，LSU 只需生成对齐 word 对应的 `WSTRB + shifted_wdata`；
+      - 对于 `sw @ addr[1:0] != 0` 或 `lh/sh` 跨界这类情况，如果想支持，就必须拆成两个对齐访问；
+      - 如果不想支持，就应该在 LSU 检测 `offset + size > 4`（或更严格的 ISA misaligned 条件）后直接上报异常。
+    - 这次 SDRAM 修复本身没有引入“通用 misaligned 单拍访存支持”；本次修复聚焦的是：
+      - `READ/WRITE` 路径的 stale `current_bank`
+      - `PRECHARGE` 关错 bank
+      - `S_ACTIVE` 下遗漏 `CMD_ACTIVE` 导致多 bank ACT 被芯片模型吃掉
+      - 控制器过程态地址锁存

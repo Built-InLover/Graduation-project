@@ -4,13 +4,13 @@
 
 .macro uart_init_asm
   li   t1, 0x10000000
-  li   t2, 0x80          # DLAB=1
-  sb   t2, 3(t1)         # LCR = 0x80
+  li   t2, 0x80
+  sb   t2, 3(t1)
   li   t2, 1
-  sb   t2, 0(t1)         # DLL = 1
-  sb   zero, 1(t1)       # DLM = 0
-  li   t2, 0x03          # 8N1, DLAB=0
-  sb   t2, 3(t1)         # LCR = 0x03
+  sb   t2, 0(t1)
+  sb   zero, 1(t1)
+  li   t2, 0x03
+  sb   t2, 3(t1)
 .endm
 
 .macro uart_putc ch
@@ -55,9 +55,9 @@ _start:
 .type _ssbl_entry, @function
 
 _ssbl_entry:
-  # 搬运 .text+.rodata+.data 从 Flash(LMA) 到 SRAM(VMA)
-  la a0, _sram_start
-  la a1, _sram_lma
+  # 搬运 .text+.rodata+.data 从 Flash(LMA) 到 SDRAM(VMA)
+  la a0, _sdram_start
+  la a1, _sdram_lma
   la a2, _data_end
 1:
   bge a0, a2, 2f
@@ -82,6 +82,6 @@ _ssbl_entry:
   uart_putc 'M'
   uart_putc '\n'
 
-  # 跳转到 SRAM 中的 _trm_init
+  # 跳转到 SDRAM 中的 _trm_init
   la t0, _trm_init
   jalr ra, t0, 0

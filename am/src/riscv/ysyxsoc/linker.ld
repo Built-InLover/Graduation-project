@@ -1,5 +1,5 @@
 /*
- * 地址空间 (Address Space) — 二级 Bootloader + cpu-tests
+ * 地址空间 (Address Space) — 二级 Bootloader + SDRAM execute test
  * -------------------------------------------------------------------------
  * [FLASH] (0x30000000 - 0x30FFFFFF)  <-- 所有代码/数据的存储区
  * |-----------------------|
@@ -7,32 +7,27 @@
  * |-----------------------|
  * |     .ssbl LMA         |  <-- SSBL 加载地址
  * |-----------------------|
- * |     .text LMA         |  <-- 程序代码加载地址
- * |-----------------------|
- * |     .rodata LMA       |  <-- 只读常量加载地址
- * |-----------------------|
- * |     .data.extra LMA   |  <-- RT-Thread 特殊 section 加载地址
- * |-----------------------|
- * |     .data LMA         |  <-- 初始化数据加载地址
+ * |     .text/.rodata/.data LMA |
  * |-----------------------|
  * -------------------------------------------------------------------------
  *
  * -------------------------------------------------------------------------
- * [SRAM] (0x0f000000 - 0x0f001FFF)  <-- SSBL + 程序运行 + 栈
+ * [SRAM] (0x0f000000 - 0x0f001FFF)  <-- 仅 SSBL + boot stack
  * |-----------------------| <--- 0x0f000000 (_ssbl_start)
- * |     .ssbl VMA         |  <-- SSBL 运行地址 (FSBL 从 Flash 搬来)
+ * |     .ssbl VMA         |
  * |-----------------------| <--- _ssbl_end
- * |     .text/.rodata     |  <-- 程序运行地址 (SSBL 从 Flash 搬来)
- * |     .data/.bss        |
- * |-----------------------| <--- _stack_pointer (0x0f002000)
- * |       Stack (栈)      |  <-- 向下增长
+ * |     boot stack        |  <-- _boot_stack_pointer = 0x0f002000
  * -------------------------------------------------------------------------
  *
  * -------------------------------------------------------------------------
- * [SDRAM] (0xa0000000 - 0xa03FFFFF)  <-- Heap / 测试内存
- * |-----------------------| <--- 0xa0000000 (_heap_start)
- * |       Heap (堆)       |
- * |-----------------------| <--- 0xa0400000 (_heap_end)
+ * [SDRAM] (0xa0000000 - 0xa03FFFFF)  <-- 程序运行 + 栈 + 堆
+ * |-----------------------| <--- 0xa0000000 (_sdram_start)
+ * |     .text/.rodata     |
+ * |     .data/.bss        |
+ * |-----------------------|
+ * |       Heap (堆)       |  <-- _heap_start ~ _heap_end
+ * |-----------------------| <--- _heap_end (_stack_pointer - 32K)
+ * |       Stack (栈)      |  <-- _stack_pointer = 0xa0400000
  * -------------------------------------------------------------------------
  */
 
@@ -57,14 +52,14 @@ SECTIONS {
   _ssbl_lma = LOADADDR(.ssbl);
 
   .text : {
-    _sram_start = .;
+    _sdram_start = .;
     *(.text*)
-  } > SRAM AT > FLASH
+  } > SDRAM AT > FLASH
 
   .rodata : {
     *(.rodata*)
     . = ALIGN(4);
-  } > SRAM AT > FLASH
+  } > SDRAM AT > FLASH
 
   .data.extra : {
     . = ALIGN(8);
@@ -92,15 +87,15 @@ SECTIONS {
     *(__am_apps.sdata*)
     __am_apps_data_end = .;
     . = ALIGN(8);
-  } > SRAM AT > FLASH
+  } > SDRAM AT > FLASH
 
   .data : {
     _data_start = .;
     *(.data*)
     *(.sdata*)
     _data_end = .;
-  } > SRAM AT > FLASH
-  _sram_lma = LOADADDR(.text);
+  } > SDRAM AT > FLASH
+  _sdram_lma = LOADADDR(.text);
 
   .bss.extra : {
     _bss_start = .;
@@ -111,16 +106,16 @@ SECTIONS {
     *(__am_apps.scommon*)
     __am_apps_bss_end = .;
     . = ALIGN(8);
-  } > SRAM
+  } > SDRAM
 
   .bss : {
     *(.bss*)
     *(.sbss*)
     *(.scommon)
     _bss_end = .;
-  } > SRAM
+  } > SDRAM
 
-  _heap_start         = ORIGIN(SDRAM);
+  _heap_start         = _bss_end;
   _boot_stack_pointer = ORIGIN(SRAM) + LENGTH(SRAM);
   _stack_pointer      = ORIGIN(SDRAM) + LENGTH(SDRAM);
   _heap_end           = _stack_pointer - 32K;
