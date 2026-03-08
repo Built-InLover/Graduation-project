@@ -25,7 +25,7 @@
 - ~~`/home/lj/ysyx-workbench/ysyxSoC/`~~ — 已迁移到 `ysyxSoC/`（项目内部）
 - `/home/lj/ysyx-workbench/mycore/` — 旧的独立仿真环境（使用 DPI-C 虚拟内存，不再使用）
 
-## 当前状态：SDRAM 位扩展完成（双颗粒 32-bit，cpu-tests 37/37）
+## 当前状态：SDRAM 位扩展完成（双颗粒 32-bit，cpu-tests 37/37）+ GPIO LED/NVBoard 初步接通
 
 CPU 复位 PC 为 0x30000000（Flash），采用二级 Bootloader 启动：
 1. FSBL（fsbl section，Flash XIP 执行）：搬运 SSBL 从 Flash(LMA) 到 SRAM(VMA)，跳转到 SRAM
@@ -33,6 +33,26 @@ CPU 复位 PC 为 0x30000000（Flash），采用二级 Bootloader 启动：
 3. 程序在 PSRAM(0x80000000) 执行，栈在 PSRAM 末尾（32KB），heap 在 .bss 之后到栈底
 
 SDRAM 已完成位扩展：双颗粒并联（lo CHIP_SEL=0 + hi CHIP_SEL=1），数据总线 32-bit，BL=1，一次 READ/WRITE 命令完成 32-bit 传输。cpu-tests 37/37 全部通过。
+
+GPIO 已开始接入：`0x1000_2000` 的低 16 位寄存器可直接驱动 `externalPins_gpio_out[15:0]`。`sim_soc` 现提供两套仿真入口：普通命令走无 GUI 的 `test_bench_soc.cpp`；NVBoard 命令走 `test_bench_soc_nvboard.cpp`，并通过 `sim_soc/constr/ysyxSoCFull.nxdc` 将 `externalPins_gpio_out[15:0]` 绑定到 16 个 LED、`externalPins_gpio_in[15:0]` 绑定到 16 个拨码开关，便于后续补全 GPIO 输入寄存器与更多显示功能。
+
+`riscv32im-ysyxsoc` 平台现已补齐 AM 的 UART 抽象（`AM_UART_CONFIG`/`AM_UART_TX`/`AM_UART_RX`），并支持和 `npc` 类似的 `mainargs` 注入流程：构建阶段通过 `insert-arg.py` 将参数字符串写入 bin 中的占位区，运行时 `trm.c` 直接把这段静态字符串传给 `main(const char *args)`。
+
+键盘输入链路也已接通：`sim_soc/constr/ysyxSoCFull.nxdc` 将 `externalPins_ps2_clk/data` 绑定到 NVBoard 的 `PS2_CLK/PS2_DAT`；`ysyxSoC/perip/ps2/ps2_top_apb.v` 现按题面要求仅在 `0x10011000` 暴露 8 位扫描码数据寄存器（无数据返回 0，内部使用 FIFO 缓冲原始 PS/2 Set-2 字节流）；`am/src/riscv/ysyxsoc/input.c` 在软件侧把这些扫描码翻译成 AM 的 `AM_INPUT_KEYBRD` 事件，并正确处理 `0xE0/0xF0` 扩展序列。
+
+本轮键盘问题的最终根因已经确认：最初的 `ps2_top_apb.v` 接收逻辑在检测到任意下降沿后就直接开始按 11 位盲收，未先等待合法的 start bit，因此帧边界容易错位，表现为 `data/parity` 看似偶尔正确但 `stop bit` 异常、按键事件不稳定，甚至只有在启动早期按下按键后才会在软件进入轮询时一次性“吐出”积压扫描码。最终修复方式是把接收器改为显式的 start-bit 驱动状态机：空闲时仅在采样边沿看到 `ps2_data==0` 才进入接收态，然后依次接收 data/parity/stop，并且只在 `start=0 && stop=1 && odd parity` 全部成立时将扫描码压入 FIFO；同时保持题面要求的寄存器语义，即 `0x10011000` 读扫描码、无数据返回 `0`。
+
+本轮排查过程也值得记录：先确认 NVBoard 绑定与焦点分流是正确的（UART 焦点输入走 UART RX，非 UART 焦点输入走 PS/2）；随后通过临时日志分别验证了顶层 `PS2_CLK/PS2_DAT` 是否跳变、RTL 是否收到了完整帧、APB 是否发生读访问、以及 `AM_INPUT_KEYBRD` 是否被上层调用。排查中还顺手修复了 `klib` 的 `%c` 格式缺失问题，这解决了 UART 测试中 `Got (uart): %c (102)` 的显示异常，但它不是键盘问题的根因。最终在确认“线在动、帧能收、软件偶尔能消费积压数据”之后，收敛到 PS/2 接收状态机缺失 start-bit gating 这一根因，并据此完成稳定修复。
+
+另一个容易造成“看起来像随机坏掉”的因素也已确认：`sim_soc/test_bench_soc_nvboard.cpp` 中 NVBoard 输入脚在初始化阶段必须保持协议定义的空闲电平，尤其是 `UART_RX=1`、`PS2_CLK=1`、`PS2_DAT=1`。如果在 `nvboard_init()` 前后把这些输入错误地置为 0，UART/PS2 接收器就可能在系统启动早期把线路误判为 start bit 或忙线，从而在软件真正开始轮询前积累伪输入，表现为“有时完全没反应，有时启动后突然吐出一串历史输入”。因此当前 NVBoard testbench 已改为在复位前显式置高这些空闲输入，并在释放复位前先执行一次 `nvboard_update()`，确保 DUT 上电后看到的是稳定空闲线路。
+
+这轮调试还澄清了一个非常关键的边界：`sim_soc/*.cpp` 中的 `printf` 和 Verilog 里的 `$display/$write` 属于宿主机/仿真器侧日志，只会打印到运行仿真的终端，不会改变 DUT 软件路径；而 `am/src/riscv/ysyxsoc/*.c`、测试程序以及 `klib` 中的 `printf` 则属于 guest 侧输出，最终会通过 `trm.c` 里的 `putch()` 写入 UART16550 寄存器，从 DUT 的 UART TX 引脚真正发出去，因此 NVBoard 串口窗口也会收到这些字符。也就是说，在 `ioe.c` / `input.c` 中加入 `printf` 并不是“无副作用调试日志”，而是在被调试的 I/O 路径上额外注入一段 guest 串口输出，它会改变时序、污染串口观测，甚至制造 Heisenbug。后续若需要继续调 UART/键盘链路，应优先使用宿主机侧日志（C++ testbench / Verilog `$display`），避免在 guest 侧 I/O 抽象中直接 `printf`。
+
+进一步实测验证表明：去掉 `am-tests/src/tests/keyboard.c` 中 `keyboard_test()` 开头那句 `printf("Try to press any key ...")` 后，`ps2-apb` 读访问和 `Got (kbd)` 立即恢复，说明程序此前并不是没有进入 `k` 分支，而是长时间停留在这条 guest 首打印所触发的 UART 输出过程中。结合宿主机侧日志可见，软件随后会在 `drain_keys()` 中持续读取 `UART_LSR`（因为 `has_uart=true`，`AM_UART_RX` 轮询本来就会疯狂刷 LSR），这属于预期现象；真正的问题是首条 guest 串口输出过早发生，导致键盘轮询启动被显著推迟甚至在调试期看起来像“完全没开始”。因此，后续调这类 I/O 组合测试时，应尽量避免在进入主轮询前打印长串 guest 字符串，尤其是在还同时打开大量宿主机侧 UART/PS2 调试日志的时候。
+
+继续排查后，根因进一步收敛到 bootloader 与 C 运行时对同一 UART 的交接时序：`start.S` 的 SSBL 在跳转 `_trm_init` 前会输出 `M` 和换行，而 `_trm_init()` 一进入又立即重新执行一次 `uart_init()`。如果此时前一轮发送尚未完全空闲（尤其是 TX empty / transmitter empty 还未恢复），那么在发送器工作过程中重配 UART 寄存器就会把后续“刚进入 C 后的第一次连续多字符输出”带入异常窗口，表现为单字符通常还能过、但第二个字符开始就容易卡在 `putch()` 的 `LSR[5]` 等待里。相比之下，等系统稳定运行一段时间后再输出较长字符串通常不会触发这个窗口。针对这个问题，`trm.c` 现已在 `_trm_init()` 中先等待 UART 同时满足 `THRE|TEMT`，再执行 `uart_init()`，并在进入 `main()` 前再次等待发送器完全空闲，以避免 bootloader 输出与 C 运行时重新初始化发生重叠。
+
+进一步定位后又确认了一点：`am-tests` 的 `keyboard_test()` 会先执行一条 guest 侧 `printf("Try to press any key ...")`，然后才读取 `AM_UART_CONFIG` / `AM_INPUT_CONFIG` 并进入轮询。由于这条 `printf` 同样走 DUT UART，因此如果 UART TX 在该时刻因为 LSR/THRE 状态迟迟未恢复，程序就会卡在这条首打印对应的 `putch()` 等待里，外部表现为已经能看到 PS/2 扫描码被硬件收到（`[ps2] scan=..`），但软件侧始终没有任何 `ps2-apb` 读访问。这个现象再次说明：调试时必须严格区分 host 侧日志与 guest 侧串口输出，后者会真实参与被测 I/O 路径。
 
 RT-Thread 内核 ~185KB，运行在 PSRAM。CTE 支持已添加（cte.c + trap.S），协作式调度（ecall yield）。
 栈从 SRAM 移到 PSRAM（RT-Thread 线程栈需求远超 SRAM 8KB），SRAM 仅用于 SSBL 临时执行。
@@ -111,7 +131,7 @@ cd sim_soc && make verilog
 - `am/src/riscv/ysyxsoc/trm.c` — TRM 运行时
   - putch() 写 UART 0x10000000（sb 指令）
   - halt() 通过 ebreak 退出
-  - 无 mainargs 机制（简化）
+  - 支持 `mainargs`：构建阶段将参数字符串注入 bin，占位区在运行时作为 `main(const char *args)` 的实参
 - **软链接约定**：后续新增 AM ysyxsoc 相关文件，先在 `am/` 下创建，再去 `abstract-machine/` 对应位置加软链接（绝对路径）
 
 ### 8. ysyxSoCFull.v 模块名替换
@@ -456,3 +476,76 @@ cd nemu && make ISA=riscv32 -j$(nproc)
       - `PRECHARGE` 关错 bank
       - `S_ACTIVE` 下遗漏 `CMD_ACTIVE` 导致多 bank ACT 被芯片模型吃掉
       - 控制器过程态地址锁存
+35. 2026-03 针对“guest 打印后再 `io_read()` 卡住”的进一步定位与修复：
+    - 现象复现：构造本地最小 `probe/rodata_probe.c` 后确认，单独执行 `io_read(AM_UART_CONFIG)` 可以正常 `ebreak`；单独打印一行后直接 `return 0` 也可以正常 `ebreak`；但“先打印一行，再执行 `io_read(AM_UART_CONFIG)`”会稳定卡死/超时。
+    - 关键排除：
+      - `rodata` 字节读本身是正确的。probe 实测能稳定打印 `B31 31 00 C02`，说明 `"11"` 的 3 个字节与终止符读取都正常。
+      - 因而此前“`putstr/printf` 触发 rodata 读 bug”的判断不成立；真正触发点是“打印之后再走 AM 的 `io_read` 分发路径”。
+    - 进一步实锤：
+      - 原始 `am/src/riscv/ysyxsoc/ioe.c` 使用 `lut[128]` 函数指针表，`ioe_read/ioe_write` 通过 `((handler_t)lut[reg])(buf)` 分发。
+      - 在这种实现下，probe 的“print -> io_read”路径会卡住；而改成 `switch(reg)` 直接分发后，同一个 probe 立即恢复并可正常 `ebreak`。
+      - 反汇编显示：原实现会从 `.data` 中读取**绝对函数指针**再 `jr a5`；新实现虽然仍可能被编译器优化成 jump table，但其跳转表是**相对偏移**形式，不再依赖从 `lut[]` 中取出绝对代码地址。
+    - 当前结论：
+      - 根因更接近于“CPU/系统对 `.data` 中保存的绝对函数地址这一路径存在问题”或“该路径对地址布局非常敏感”，而不是 `printf` / `putstr` / `rodata` 本身。
+      - 作为稳定修复，`ioe.c` 已去掉 `lut` 函数指针表，改为 `switch-case` 直接分发 `AM_UART_CONFIG / AM_UART_RX / AM_TIMER_* / AM_INPUT_* / AM_UART_TX`。
+      - 这个修复与用户观察完全一致：此前“前面一旦多打几个字符，后面的 `has_uart/has_kbd` 像是失效”其实是 `io_read(...)` 没有正常返回；切到直接分发后，问题消失。
+    - 同轮还补了一个独立问题：
+      - `sim_soc/test_bench_soc.cpp` 之前没有把 `top->externalPins_uart_rx` 拉到空闲高电平，导致纯命令行 testbench 下 UART RX 可能漂空；现已补上 `top->externalPins_uart_rx = 1;`。
+      - 该问题主要影响非 NVBoard 仿真与 DiffTest 稳定性；NVBoard 版 testbench 之前已经有这个初始化。
+
+## 2026-03-08 `.data` 初始化错位根因（函数指针 / `printf` / `ioe` 异常的真正来源）
+
+### 最终结论
+- 之前一度怀疑是 CPU 的 `jalr`/load-use 冒险问题，但最终 probe 证明这不是根因。
+- 真正的问题在 `am/src/riscv/ysyxsoc/linker.ld`：
+  - `.rodata` 末尾只对齐到 4 字节；
+  - `.data` 开头又对齐到 8 字节；
+  - 当时链接结果会在 `.rodata` 和 `.data` 之间留下一个 **4 字节的 VMA 空洞**。
+- SSBL 在 `am/src/riscv/ysyxsoc/start.S` 中采用的是**线性整段搬运**：从 `_sdram_lma` 一直拷到 `_data_end`，默认假设 SDRAM 运行镜像在 VMA/LMA 上是连续的。
+- 由于这 4 字节空洞只存在于 VMA、不存在于 LMA，导致从 Flash 搬到 SDRAM 时，`.data` 整体向后错位了 4 字节。
+- 结果就是：所有普通 `.data` 变量的初值都可能错位。函数指针表、静态状态表、配置表最容易中招。
+
+### 这个 bug 如何解释之前的现象
+- `ioe.c` 早期的 `lut[128]` 函数指针表位于普通 `.data`，因此其初值在运行时并不可靠。
+- 这就解释了为什么：
+  - 有时 `AM_UART_CONFIG` / `AM_INPUT_CONFIG` 分发异常；
+  - 加一句 guest 侧 `printf` 后现象会变化；
+  - 看起来像“函数指针被打印影响了”或者“`jalr` 跳错了”。
+- 实际上，`printf` 只是改变了链接布局/镜像内容，使错位后的 `.data` 呈现出不同的坏相，不是它本身和函数指针“冲突”。
+
+### 关键复现实验
+- 使用 `probe/rodata_probe.c` 做了一个最小实验：
+  - `static void *lut[128] = { [1] = local_cfg };`
+  - 程序启动后先打印 `lut[1]`，再执行填表和间接调用。
+- 在修复前，运行结果是：
+  - `I -> 00000000`
+  - `A -> a0000000`
+  - `B/C -> 000000ee`
+- 这说明：
+  - `lut[1]` 在进入 `main()` 时就已经不是 ELF 里应有的 `0xa000000c`，而是错成了 0；
+  - 随后初始化循环把它补成了 `local_fail`；
+  - 间接调用自然只会落到 `local_fail`。
+- 修复后同一 probe 输出恢复为：
+  - `I -> a000000c`
+  - `A -> a000000c`
+  - `B/C/D -> 00000001`
+
+### 修复方式
+- 修改了 `am/src/riscv/ysyxsoc/linker.ld`：
+  - 将 `.rodata` 末尾对齐从 `ALIGN(4)` 改为 `ALIGN(8)`；
+  - 让 `.data` 前面的 8 字节对齐不再额外制造 VMA 空洞；
+  - 同时把此前单独的“额外 data 元数据”组织到 `.data` 输出段中，避免再次出现“线性拷贝假设”和实际段布局不一致的问题。
+- 修复后，`readelf -S` 可见 `.data` 直接从 `.rodata` 末尾连续开始，不再有额外的 `.data.extra` NOBITS 空洞插在两者之间。
+
+### 排查过程回顾
+1. 先怀疑 `ioe.c` 的函数指针分发表，临时改成 `switch-case`，现象稳定下来，但这只是绕开症状。
+2. 随后怀疑 `jalr` 目标地址低位被错误清零。
+3. 用 probe 继续缩小范围后发现：
+   - 问题在 `main()` 一进入时就已经存在；
+   - 还没执行间接调用，`lut[1]` 初值就错了。
+4. 再结合 `readelf -S/-s` 观察 section 排布，最终定位到 `.rodata` 与 `.data` 之间的 4 字节 VMA 空洞。
+
+### 当前状态
+- 根因已确认并修复。
+- `sim_soc/test_bench_soc.cpp` 里补的 `externalPins_uart_rx = 1;` 仍然保留，这个修复和本次 `.data` 问题独立，仍然是正确的。
+- `am/src/riscv/ysyxsoc/ioe.c` 当前仍使用 `switch-case` 分发；即使现在 linker 已修好，这个实现本身也没有问题，可以继续保留。

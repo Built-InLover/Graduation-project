@@ -1,8 +1,12 @@
-.PHONY: default sim clean verilog run
+.PHONY: default sim sim-nvboard clean verilog run run-nvboard
 
 TOPNAME = ysyxSoCFull
 YSYXSOC_HOME = $(abspath ../ysyxSoC)
 NPC_BUILD = $(abspath ../build)
+NVBOARD_HOME ?= /home/lj/ysyx-workbench/nvboard
+NXDC_FILES = $(abspath ./constr/ysyxSoCFull.nxdc)
+SRC_AUTO_BIND = $(abspath ./build/auto_bind.cpp)
+USE_NVBOARD ?= 0
 
 VERILATOR = verilator
 VERILATOR_CFLAGS += -MMD --build -cc \
@@ -11,24 +15,26 @@ VERILATOR_CFLAGS += -MMD --build -cc \
 
 ifdef TRACE
 VERILATOR_CFLAGS += --trace-fst
-CFLAGS_EXTRA += -DTRACE_ON
+CXXFLAGS += -DTRACE_ON
 endif
 
 ifdef LOG
-CFLAGS_EXTRA += -DLOG_ON
+CXXFLAGS += -DLOG_ON
 endif
 
 ifdef LIMIT_CYCLE
-CFLAGS_EXTRA += -DMAX_CYCLES=$(LIMIT_CYCLE)
+CXXFLAGS += -DMAX_CYCLES=$(LIMIT_CYCLE)
 endif
 
 ifdef DIFFTEST
-CFLAGS_EXTRA += -DDIFFTEST_ON
-LDFLAGS_EXTRA += -ldl
+CXXFLAGS += -DDIFFTEST_ON
 endif
 
 # 不同配置使用不同 obj_dir，避免 DIFFTEST/非 DIFFTEST 互相覆盖
 OBJ_SUFFIX := $(if $(DIFFTEST),_dt)$(if $(TRACE),_trace)
+ifeq ($(USE_NVBOARD),1)
+OBJ_SUFFIX += _nvboard
+endif
 OBJ_DIR = ./obj_dir$(OBJ_SUFFIX)
 
 # Verilog sources
@@ -40,13 +46,31 @@ VSRCS += $(NPC_BUILD)/ysyx_23060000.sv
 VSRCS += $(shell find $(YSYXSOC_HOME)/perip -name "*.v")
 
 # C++ sources
+ifeq ($(USE_NVBOARD),1)
+CSRCS = $(abspath ./test_bench_soc_nvboard.cpp) $(SRC_AUTO_BIND)
+else
 CSRCS = $(abspath ./test_bench_soc.cpp)
+endif
 
 # Include paths
-INC_FLAGS += -I$(YSYXSOC_HOME)/perip/uart16550/rtl
-INC_FLAGS += -I$(YSYXSOC_HOME)/perip/spi/rtl
+INC_PATH += $(YSYXSOC_HOME)/perip/uart16550/rtl
+INC_PATH += $(YSYXSOC_HOME)/perip/spi/rtl
 
 GENERATED_SV = $(NPC_BUILD)/ysyx_23060000.sv
+
+$(SRC_AUTO_BIND): $(NXDC_FILES)
+	@mkdir -p $(dir $@)
+	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $^ $@
+
+ifeq ($(USE_NVBOARD),1)
+include $(NVBOARD_HOME)/scripts/nvboard.mk
+endif
+
+CXXFLAGS += $(addprefix -I, $(INC_PATH))
+
+ifdef DIFFTEST
+LDFLAGS += -ldl
+endif
 
 # 生成 Verilog 并修正 Chisel 信号命名 → ysyxSoC 接口格式
 verilog:
@@ -59,19 +83,25 @@ verilog:
 
 default: sim
 
-sim: $(VSRCS) $(CSRCS)
+sim: $(VSRCS) $(CSRCS) $(if $(filter 1,$(USE_NVBOARD)),$(NVBOARD_ARCHIVE))
 	@mkdir -p $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		--top-module $(TOPNAME) \
 		$(addprefix -I, $(YSYXSOC_HOME)/perip/uart16550/rtl $(YSYXSOC_HOME)/perip/spi/rtl) \
-		$(if $(CFLAGS_EXTRA),-CFLAGS "$(CFLAGS_EXTRA)") \
-		$(if $(LDFLAGS_EXTRA),-LDFLAGS "$(LDFLAGS_EXTRA)") \
+		$(addprefix -CFLAGS , $(CXXFLAGS)) \
+		$(addprefix -LDFLAGS , $(if $(filter 1,$(USE_NVBOARD)),$(NVBOARD_ARCHIVE)) $(LDFLAGS)) \
 		--Mdir $(abspath $(OBJ_DIR)) --exe -o $(abspath $(OBJ_DIR)/$(TOPNAME)) \
 		$(VSRCS) $(CSRCS)
+
+sim-nvboard:
+	$(MAKE) USE_NVBOARD=1 sim $(if $(IMG),IMG=$(IMG)) $(if $(DIFFTEST),DIFFTEST=$(DIFFTEST)) $(if $(DIFF),DIFF=$(DIFF)) $(if $(FLASH),FLASH=$(FLASH))
 
 # 用法: make run IMG=xxx.bin [DIFFTEST=1 DIFF=path/to/nemu.so] [FLASH=flash.bin]
 run: sim
 	$(OBJ_DIR)/$(TOPNAME) $(IMG) $(if $(DIFF),$(DIFF),$(if $(FLASH),none)) $(FLASH)
 
+run-nvboard:
+	$(MAKE) USE_NVBOARD=1 run $(if $(IMG),IMG=$(IMG)) $(if $(DIFFTEST),DIFFTEST=$(DIFFTEST)) $(if $(DIFF),DIFF=$(DIFF)) $(if $(FLASH),FLASH=$(FLASH))
+
 clean:
-	rm -rf obj_dir obj_dir_dt obj_dir_trace obj_dir_dt_trace
+	rm -rf obj_dir obj_dir_* build/auto_bind.cpp

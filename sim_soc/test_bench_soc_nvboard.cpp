@@ -1,5 +1,6 @@
 #include "VysyxSoCFull.h"
 #include "verilated.h"
+#include <nvboard.h>
 #ifdef TRACE_ON
 #include "verilated_fst_c.h"
 #endif
@@ -245,6 +246,7 @@ extern "C" void sim_regtrace(int pc, int rd, int wdata) {
 
 static VysyxSoCFull *top;
 static VerilatedContext *contextp;
+void nvboard_bind_all_pins(VysyxSoCFull* top);
 #ifdef TRACE_ON
 static VerilatedFstC *tfp;
 #endif
@@ -262,6 +264,7 @@ void one_cycle() {
     tfp->dump(contextp->time());
 #endif
     contextp->timeInc(1);
+    nvboard_update();
 }
 
 int main(int argc, char **argv) {
@@ -292,6 +295,10 @@ int main(int argc, char **argv) {
     top->externalPins_uart_rx = 1;
     top->externalPins_ps2_clk = 1;
     top->externalPins_ps2_data = 1;
+
+    nvboard_bind_all_pins(top);
+    nvboard_init();
+    nvboard_update();
 
 #ifdef TRACE_ON
     Verilated::traceEverOn(true);
@@ -350,5 +357,6 @@ int main(int argc, char **argv) {
 #endif
     delete top;
     delete contextp;
+    nvboard_quit();
     return ebreak_flag ? 0 : 1;
 }

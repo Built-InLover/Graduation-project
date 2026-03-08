@@ -7,7 +7,7 @@
  * |-----------------------|
  * |     .ssbl LMA         |  <-- SSBL 加载地址
  * |-----------------------|
- * |     .text/.rodata/.data LMA |
+ * | .text/.rodata/.data LMA | <-- SDRAM 运行镜像，LMA 必须连续
  * |-----------------------|
  * -------------------------------------------------------------------------
  *
@@ -58,25 +58,28 @@ SECTIONS {
 
   .rodata : {
     *(.rodata*)
-    . = ALIGN(4);
+    . = ALIGN(8);
   } > SDRAM AT > FLASH
 
-  .data.extra : {
+  .data : {
+    _data_start = .;
+
     . = ALIGN(8);
     __fsymtab_start = .;
     KEEP(*(FSymTab))
     __fsymtab_end = .;
+
     . = ALIGN(8);
     __vsymtab_start = .;
     KEEP(*(VSymTab))
     __vsymtab_end = .;
-    . = ALIGN(8);
 
+    . = ALIGN(8);
     __rt_init_start = .;
     KEEP(*(SORT(.rti_fn*)))
     __rt_init_end = .;
-    . = ALIGN(8);
 
+    . = ALIGN(8);
     __rt_utest_tc_tab_start = .;
     KEEP(*(UtestTcTab))
     __rt_utest_tc_tab_end = .;
@@ -86,11 +89,8 @@ SECTIONS {
     *(__am_apps.data*)
     *(__am_apps.sdata*)
     __am_apps_data_end = .;
-    . = ALIGN(8);
-  } > SDRAM AT > FLASH
 
-  .data : {
-    _data_start = .;
+    . = ALIGN(8);
     *(.data*)
     *(.sdata*)
     _data_end = .;
