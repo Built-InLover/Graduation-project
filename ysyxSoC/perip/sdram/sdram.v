@@ -121,6 +121,12 @@ module sdram #(
         sdram_lo_write({7'b0, active_row[write_bank], write_bank, write_col}, dq, {6'b0, dqm});
       else
         sdram_hi_write({7'b0, active_row[write_bank], write_bank, write_col}, dq, {6'b0, dqm});
+`ifdef verilator
+      // DEBUG OFF:
+      // if (({7'b0, active_row[write_bank], write_bank, write_col} == 32'h00000800) || ({7'b0, active_row[write_bank], write_bank, write_col} == 32'h00001800)) begin
+      //   $display("[SDRAM_CHIP%0d] WRITE local=%08x row=%0d bank=%0d col=%0d dq=%04x dqm=%0x", CHIP_SEL, {7'b0, active_row[write_bank], write_bank, write_col}, active_row[write_bank], write_bank, write_col, dq, dqm);
+      // end
+`endif
     end
   end
 
@@ -182,13 +188,27 @@ module sdram #(
 
         S_ACTIVE: begin
           case (cmd)
+            CMD_ACTIVE: begin
+              active_row[ba] <= a;
+              row_open[ba] <= 1'b1;
+              current_bank <= ba;
+              state <= S_ACTIVE;
+            end
             CMD_READ: begin
+              current_bank <= ba;
               col_addr <= a[9:0];
               cas_cnt <= cas_latency;
               burst_cnt <= burst_length;
+`ifdef verilator
+              // DEBUG OFF:
+              // if (({7'b0, active_row[ba], ba, a[9:0]} == 32'h00000800) || ({7'b0, active_row[ba], ba, a[9:0]} == 32'h00001800)) begin
+              //   $display("[SDRAM_CHIP%0d] READ_CMD local=%08x row=%0d bank=%0d col=%0d", CHIP_SEL, {7'b0, active_row[ba], ba, a[9:0]}, active_row[ba], ba, a[9:0]);
+              // end
+`endif
               state <= S_READ;
             end
             CMD_WRITE: begin
+              current_bank <= ba;
               col_addr <= a[9:0] + 1;
               burst_cnt <= burst_length - 1;
               if (burst_length <= 1)
@@ -200,7 +220,8 @@ module sdram #(
               if (a[10])
                 row_open <= 4'b0000;
               else
-                row_open[current_bank] <= 1'b0;
+                row_open[ba] <= 1'b0;
+              current_bank <= ba;
               state <= S_IDLE;
             end
             default: begin
@@ -217,6 +238,12 @@ module sdram #(
         end
 
         S_READ_DATA: begin
+`ifdef verilator
+          // DEBUG OFF:
+          // if (({7'b0, active_row[current_bank], current_bank, col_addr} == 32'h00000800) || ({7'b0, active_row[current_bank], current_bank, col_addr} == 32'h00001800)) begin
+          //   $display("[SDRAM_CHIP%0d] READ_DAT local=%08x row=%0d bank=%0d col=%0d dq=%04x", CHIP_SEL, {7'b0, active_row[current_bank], current_bank, col_addr}, active_row[current_bank], current_bank, col_addr, dq_out_next);
+          // end
+`endif
           if (burst_cnt > 1) begin
             col_addr <= col_addr + 1;
             burst_cnt <= burst_cnt - 1;
