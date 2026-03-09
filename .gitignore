@@ -10,6 +10,8 @@
 !*.ld
 !*.cpp
 !*.cc
+!.clangd
+!tools/*.sh
 !.gitignore
 !.scalafmt.conf
 !CLAUDE.md

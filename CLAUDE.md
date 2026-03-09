@@ -568,3 +568,45 @@ cd nemu && make ISA=riscv32 -j$(nproc)
 - 验证
   - `make -C sim_soc sim-nvboard` 可通过，说明 VGA RTL + NVBoard 自动绑线 + 顶层端口连接均已编译打通
   - `make ARCH=riscv32im-ysyxsoc mainargs=v insert-arg`（`am-tests`）可重新编译 `video` 用例，随后 `SDL_VIDEODRIVER=dummy CCACHE_DISABLE=1 make -C sim_soc USE_NVBOARD=1 run IMG=... LIMIT_CYCLE=6000000` 可稳定启动并运行到超时，未出现新的编译/链接/启动错误
+### Clangd修复
+- 现在仓库根目录已经生成了 compile_commands.json，里面有 48 条真实编译命令。                                                                       
+- 我确认它已经覆盖了你关心的 am 平台文件，比如 am/src/riscv/ysyxsoc/ioe.c、am/src/riscv/ysyxsoc/trm.c，也覆盖了 sim_soc/test_bench_soc_nvboard.cpp。
+- 我还加了 .clangd 和一键脚本，后面你不用手搓一长串 bear + make。                                                                                  
+                                                                                                                                                   
+依赖关系                                                                                                                                           
+                                                                                                                                                   
+- am-tests 的入口很薄，/home/lj/ysyx-workbench/am-kernels/tests/am-tests/Makefile:1 只是定义 SRCS，然后直接 include $(AM_HOME)/Makefile。          
+- 真正的编译规则在 /home/lj/ysyx-workbench/abstract-machine/Makefile:1：这里决定了 CC/CFLAGS/INC_PATH，并递归构建 am、klib。                       
+- ARCH=riscv32im-ysyxsoc 会走 am/scripts/riscv32im-ysyxsoc.mk:1，再继续包含 am/scripts/platform/ysyxsoc.mk:1。                                     
+- am/scripts/platform/ysyxsoc.mk:1 才真正把 am/src/riscv/ysyxsoc/start.S、trm.c、cte.c、trap.S、ioe.c、timer.c、input.c 这些平台源文件拉进来。     
+                                                                                                                                                   
+我做的事                                                                                                                                           
+                                                                                                                                                   
+- 新增 .clangd，固定 clangd 从仓库根找数据库：.clangd:1                                                                                            
+- 新增一键脚本 tools/gen_compile_commands.sh:1                                                                                                     
+    - 清理并重建 sim_soc                                                                                                                           
+    - 清理并重建 abstract-machine/am                                                                                                               
+    - 清理并重建 abstract-machine/klib                                                                                                             
+    - 重建 am-tests                                                                                                                                
+    - 用 bear 统一追加到根目录 compile_commands.json                                                                                               
+    - 最后按真实路径去重，避免 symlink/重复项干扰 clangd                                                                                           
+- 放开了 gitignore 让 .clangd 和脚本可跟踪：.gitignore:1                                                                                           
+                                                                                                                                                   
+以后怎么用                                                                                                                                         
+- 全量重建索引库：
+    - tools/gen_compile_commands.sh
+- 快速增量更新：
+    - CLEAN_BUILD=0 tools/gen_compile_commands.sh
+- 生成后如果编辑器还报红：
+    - 重启 clangd
+    - 或重新打开工作区根目录 /home/lj/ysyx-workbench/Graduation-project
+
+这类多目录工作区，clangd 最稳的做法
+
+- 永远只维护一个“根” compile_commands.json
+- 这个数据库里的 file 最好是绝对路径
+- 所有跨目录构建都汇总到这一个数据库
+- 尽量从“仓库真实路径”打开文件，不要从外部 symlink 路径打开
+    - 例如优先打开 am/src/riscv/ysyxsoc/ioe.c
+    - 不要优先打开 /home/lj/ysyx-workbench/abstract-machine/am/src/riscv/ysyxsoc/ioe.c
+- 每次你改了构建参数、ARCH、头文件路径、切换 target 后，都重跑一次脚本
