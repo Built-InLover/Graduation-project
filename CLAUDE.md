@@ -549,3 +549,22 @@ cd nemu && make ISA=riscv32 -j$(nproc)
 - 根因已确认并修复。
 - `sim_soc/test_bench_soc.cpp` 里补的 `externalPins_uart_rx = 1;` 仍然保留，这个修复和本次 `.data` 问题独立，仍然是正确的。
 - `am/src/riscv/ysyxsoc/ioe.c` 当前仍使用 `switch-case` 分发；即使现在 linker 已修好，这个实现本身也没有问题，可以继续保留。
+
+### 22. VGA 帧缓冲 + NVBoard 显示链路
+- `ysyxSoC/perip/vga/vga_top_apb.v` — 实现 APB VGA 控制器
+  - 地址窗口仍为 `0x2100_0000 ~ 0x211f_ffff`，当前把前 `640 * 480 * 4 = 1,228,800B` 作为线性帧缓冲使用
+  - APB 侧支持 32-bit 读写和 `WSTRB` 字节写掩码，像素格式按 `0x00RRGGBB` 输出到 `vga_r/g/b`
+  - 显示侧实现 640x480 扫描时序：`hsync`/`vsync` 按 NVBoard 约定时序输出，`vga_valid` 在可视区拉高，并按光栅顺序持续读取帧缓冲
+  - 当前实现使用 SoC 内部 `reg [31:0] fb_mem[]` 作为简化帧缓冲，优先满足仿真/NVBoard 显示需求
+- `sim_soc/constr/ysyxSoCFull.nxdc` — 新增 VGA 绑线
+  - `externalPins_vga_hsync/vsync/valid` 分别绑定到 `VGA_HSYNC/VGA_VSYNC/VGA_BLANK_N`
+  - `externalPins_vga_r/g/b[7:0]` 绑定到 NVBoard 的 24 根 VGA 颜色引脚
+  - `sim_soc/build/auto_bind.cpp` 可由 `make -C sim_soc sim-nvboard` 自动重新生成并包含上述 VGA 绑定
+- `am/src/riscv/ysyxsoc/ioe.c` — 补齐 AM GPU 基本抽象
+  - `AM_GPU_CONFIG` 返回 `640x480`、`present=true`、`has_accel=false`
+  - `AM_GPU_STATUS` 恒返回 ready
+  - `AM_GPU_FBDRAW` 直接把像素块写入 `0x2100_0000` 帧缓冲，并在软件侧处理越界裁剪
+  - 由于 NVBoard 端自动按 VGA 时序刷新，当前 `sync=true` 只作为兼容参数保留，不需要额外软件 flush 寄存器
+- 验证
+  - `make -C sim_soc sim-nvboard` 可通过，说明 VGA RTL + NVBoard 自动绑线 + 顶层端口连接均已编译打通
+  - `make ARCH=riscv32im-ysyxsoc mainargs=v insert-arg`（`am-tests`）可重新编译 `video` 用例，随后 `SDL_VIDEODRIVER=dummy CCACHE_DISABLE=1 make -C sim_soc USE_NVBOARD=1 run IMG=... LIMIT_CYCLE=6000000` 可稳定启动并运行到超时，未出现新的编译/链接/启动错误
