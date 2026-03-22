@@ -27,7 +27,9 @@ sim_soc/obj_dir*/
 # mill
 !*.mill
 !.mill-version
+!mill
 !mill.bat
+!millw
 out/
 .bsp/
 .metals/

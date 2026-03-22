@@ -1,31 +1,32 @@
 BUILD_DIR = ./build
 
 PRJ = playground
+MILL ?= ./mill
 
 test:
-	mill -i $(PRJ).test
+	$(MILL) -i $(PRJ).test
 
 verilog:
 	$(call git_commit, "generate verilog")
 	mkdir -p $(BUILD_DIR)
-	mill -i $(PRJ).runMain top.main --target-dir $(BUILD_DIR)
+	$(MILL) -i $(PRJ).runMain top.main --target-dir $(BUILD_DIR)
 	head -n -2 ./build/top.sv > temp.sv && mv temp.sv ./build/top.sv
 	cp ./build/top.sv ~/ysyx-workbench/npc/vsrc/
 
 help:
-	mill -i $(PRJ).runMain Elaborate --help
+	$(MILL) -i $(PRJ).runMain Elaborate --help
 
 reformat:
-	mill -i __.reformat
+	$(MILL) -i __.reformat
 
 checkformat:
-	mill -i __.checkFormat
+	$(MILL) -i __.checkFormat
 
 bsp:
-	mill -i mill.bsp.BSP/install
+	$(MILL) -i mill.bsp.BSP/install
 
 idea:
-	mill -i mill.idea.GenIdea/idea
+	$(MILL) -i mill.idea.GenIdea/idea
 
 clean:
 	-rm -rf $(BUILD_DIR)

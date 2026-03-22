@@ -34,6 +34,8 @@ CPU 复位 PC 为 0x30000000（Flash），采用二级 Bootloader 启动：
 
 SDRAM 已完成位扩展：双颗粒并联（lo CHIP_SEL=0 + hi CHIP_SEL=1），数据总线 32-bit，BL=1，一次 READ/WRITE 命令完成 32-bit 传输。cpu-tests 37/37 全部通过。
 
+前端目前已经接入第一版 `ICache`。结构位置在 `IFU` 和外部 `ifu_bus` 之间，默认配置为 4-way / 64 sets / 1 word per line（32-bit line，总容量 1KB），属于可配置参数化的 blocking icache。命中时直接返回；miss 时发起单拍 AXI 读，`R` 返回后若 `resp==OKAY` 则执行 refill，若 `resp!=0` 则把 fault 作为取指异常沿用现有 IFU/WBU 异常链路上报。当前实现仍是单未决 miss，不支持 hit-under-miss；redirect/flush 不直接清 cache，而是继续依赖 IFU 的 `epoch` 机制丢弃旧路径返回。
+
 GPIO 已开始接入：`0x1000_2000` 的低 16 位寄存器可直接驱动 `externalPins_gpio_out[15:0]`。`sim_soc` 现提供两套仿真入口：普通命令走无 GUI 的 `test_bench_soc.cpp`；NVBoard 命令走 `test_bench_soc_nvboard.cpp`，并通过 `sim_soc/constr/ysyxSoCFull.nxdc` 将 `externalPins_gpio_out[15:0]` 绑定到 16 个 LED、`externalPins_gpio_in[15:0]` 绑定到 16 个拨码开关，便于后续补全 GPIO 输入寄存器与更多显示功能。
 
 `riscv32im-ysyxsoc` 平台现已补齐 AM 的 UART 抽象（`AM_UART_CONFIG`/`AM_UART_TX`/`AM_UART_RX`），并支持和 `npc` 类似的 `mainargs` 注入流程：构建阶段通过 `insert-arg.py` 将参数字符串写入 bin 中的占位区，运行时 `trm.c` 直接把这段静态字符串传给 `main(const char *args)`。
@@ -75,6 +77,27 @@ NEMU（TARGET_SHARE 模式）已彻底去掉 pmem，改为独立地址空间：m
 - `corewithbus/IFU.scala` — AR 通道 id=0, len=0, size=2, burst=1, 复位 PC=0x30000000（Flash XIP）
   - inst_queue（Queue, 深度4）缓冲 R 通道响应，r.ready 不依赖下游流水线，防止死锁
 - `corewithbus/LSU.scala` — AR/AW 通道 id=1, size 根据 func 动态设置（lb=0, lh=1, lw=2）
+
+### 1.1 第一版 ICache（IFU 前端缓存）
+- `corewithbus/ICache.scala` — 新增可配置 blocking icache
+  - 参数：`ICacheConfig(addrBits, dataBits, nSets, nWays, lineBytes, cacheableRegions)`
+  - 当前默认值：`nSets=64`，`nWays=4`，`lineBytes=4`
+  - 地址拆分：`tag | index | byteOffset`，默认 32-bit 地址下对应 `tag[31:8] / index[7:2] / offset[1:0]`
+  - 存储体：`validArray + tagArray + dataArray + rrPtr`
+  - 替换策略：优先填空 way，否则按每组 round-robin 指针替换
+  - miss 路径：单未决 miss，AXI `AR(id=0,len=0,size=2,burst=INCR)` 发起 1 beat refill；`R` 返回后若 `resp==0` 则写 cache，否则只向上返回异常
+  - cacheable 判定：当前默认缓存 `0x3000_0000`（Flash XIP）和 `0xA000_0000`（SDRAM execute）两个高位区域；其余地址走 bypass read，不分配 cache
+- `corewithbus/IFU.scala` — 不再自己实现 AXI 取指状态机，改为：
+  - `pc_reg` 通过 `icache.io.cpu.req` 发起取指
+  - `meta_queue` 仍记录 `{pc, epoch}`，在请求被 icache 接收时入队
+  - `inst_queue` 改为接收 `icache.io.cpu.resp(data, exception)`
+  - redirect 后仍沿用 `epoch` 过滤旧 miss/旧命中返回，不直接 flush icache 内容
+
+### 1.2 构建环境补齐（mill launcher + JDK）
+- 仓库根目录新增 Unix 版 `mill` launcher 与兼容入口 `millw`，读取 `.mill-version` 自动解析/下载对应版本的 Mill
+- `Makefile` 现默认优先调用仓库内 `./mill`
+- 当前开发机已安装 `openjdk-17-jdk-headless`，可直接在 Linux/WSL 侧运行 `./mill -i playground.compile`
+- 本轮已用 `./mill -i playground.compile` 验证 `ICache.scala + IFU.scala` 通过 Scala/Chisel 编译
 
 ### 2. CLINT（保留在 CPU 内部）
 - `core/Axi4CLINT.scala` — AXI4 接口，地址范围 0x0200_0000~0x0200_ffff
