@@ -54,14 +54,8 @@ SECTIONS {
   .text : {
     _sdram_start = .;
     *(.text*)
-  } > SDRAM AT > FLASH
-
-  .rodata : {
     *(.rodata*)
-    . = ALIGN(8);
-  } > SDRAM AT > FLASH
-
-  .data : {
+    . = ALIGN(4);
     _data_start = .;
 
     . = ALIGN(8);
@@ -93,6 +87,7 @@ SECTIONS {
     . = ALIGN(8);
     *(.data*)
     *(.sdata*)
+    *(.srodata*)
     _data_end = .;
   } > SDRAM AT > FLASH
   _sdram_lma = LOADADDR(.text);

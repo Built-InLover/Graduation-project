@@ -51,7 +51,7 @@ __am_asm_trap:
   STORE t0, OFFSET_CAUSE(sp)
   STORE t1, OFFSET_STATUS(sp)
 
-	addi t2, t2, 4 #record the next inst
+  addi t2, t2, 4 #record the next inst
   STORE t2, OFFSET_EPC(sp)
 
   # set mstatus.MPRV to pass difftest
@@ -61,8 +61,7 @@ __am_asm_trap:
 
   mv a0, sp
   call __am_irq_handle
-
-	mv sp, a0 # for change sp for a new program
+  mv sp, a0 # for change sp for a new program
 
   LOAD t1, OFFSET_STATUS(sp)
   LOAD t2, OFFSET_EPC(sp)

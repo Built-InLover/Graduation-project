@@ -39,8 +39,8 @@ Context *kcontext(Area kstack, void (*entry)(void *), void *arg) {
   Context *cp = (Context *)(kstack.end - sizeof(Context));
   cp->mepc = (uint32_t)entry;
   cp->mstatus = 0x1800;
-  cp->gpr[10] = (uint32_t)(arg);
-	return cp;
+  cp->gpr[10] = (uint32_t)(arg);//a0 = arg
+  return cp;
 }
 
 void yield() {

@@ -107,10 +107,7 @@ extern "C" void sdram_hi_write(uint32_t addr, uint16_t data, uint8_t dqm) {
     sdram_chip_write(sdram_hi_storage, addr, data, dqm);
 }
 
-// ==================== DiffTest ====================
-#ifdef DIFFTEST_ON
-enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };
-
+// ==================== NPC CPU 状态（watchdog + difftest 共用）====================
 typedef struct {
     uint32_t gpr[32];
     uint32_t pc;
@@ -118,26 +115,7 @@ typedef struct {
 } CPU_state;
 
 static CPU_state npc_cpu = {};
-static bool difftest_commit = false;
-
-static void (*ref_difftest_memcpy)(uint32_t, void*, size_t, bool);
-static void (*ref_difftest_regcpy)(void*, bool);
-static void (*ref_difftest_exec)(uint64_t);
-
-extern "C" void sim_set_gpr(int idx, int val) {
-    npc_cpu.gpr[idx] = (uint32_t)val;
-}
-
-// NPC debug_csr: [0]=mcause, [1]=mepc, [2]=mstatus, [3]=mtvec
-// NEMU CSR struct: { mtvec, mepc, mstatus, mcause }
-extern "C" void sim_difftest(int pc, int dnpc, int mcause, int mepc, int mstatus, int mtvec) {
-    npc_cpu.pc = (uint32_t)dnpc;
-    npc_cpu.csr.mcause  = (uint32_t)mcause;
-    npc_cpu.csr.mepc    = (uint32_t)mepc;
-    npc_cpu.csr.mstatus = (uint32_t)mstatus;
-    npc_cpu.csr.mtvec   = (uint32_t)mtvec;
-    difftest_commit = true;
-}
+static bool inst_commit = false;
 
 static const char *reg_names[] = {
     "zero","ra","sp","gp","tp","t0","t1","t2",
@@ -146,7 +124,63 @@ static const char *reg_names[] = {
     "s8","s9","s10","s11","t3","t4","t5","t6"
 };
 
+extern "C" void sim_set_gpr(int idx, int val) {
+    npc_cpu.gpr[idx] = (uint32_t)val;
+}
+
+static void watchdog_dump(long cycle, long last_commit);
+
+extern "C" void sim_difftest(int pc, int dnpc, int mcause, int mepc, int mstatus, int mtvec) {
+    npc_cpu.pc = (uint32_t)dnpc;
+    npc_cpu.csr.mcause  = (uint32_t)mcause;
+    npc_cpu.csr.mepc    = (uint32_t)mepc;
+    npc_cpu.csr.mstatus = (uint32_t)mstatus;
+    npc_cpu.csr.mtvec   = (uint32_t)mtvec;
+    inst_commit = true;
+}
+
+static void watchdog_dump(long cycle, long last_commit) {
+    printf("[watchdog] no commit for %ld cycles (cycle %ld, last commit at %ld)\n",
+           cycle - last_commit, cycle, last_commit);
+    printf("[watchdog] NPC pc=0x%08x\n", npc_cpu.pc);
+    printf("[watchdog] === GPR Dump ===\n");
+    for (int i = 0; i < 32; i++) {
+        printf("  x%-2d(%-4s) = 0x%08x\n", i, reg_names[i], npc_cpu.gpr[i]);
+    }
+    printf("  mcause  = 0x%08x\n", npc_cpu.csr.mcause);
+    printf("  mepc    = 0x%08x\n", npc_cpu.csr.mepc);
+    printf("  mstatus = 0x%08x\n", npc_cpu.csr.mstatus);
+    printf("  mtvec   = 0x%08x\n", npc_cpu.csr.mtvec);
+}
+
+// ==================== DiffTest ====================
+#ifdef DIFFTEST_ON
+enum { DIFFTEST_TO_DUT, DIFFTEST_TO_REF };
+
+static bool difftest_skip = false;
+
+// 外设地址范围：访问这些区域时跳过 difftest 比对
+static inline bool is_peripheral_addr(uint32_t addr) {
+    if (addr >= 0x10000000 && addr < 0x10001000) return true;  // UART
+    if (addr >= 0x10001000 && addr < 0x10002000) return true;  // SPI controller
+    if (addr >= 0x10002000 && addr < 0x10002010) return true;  // GPIO
+    if (addr >= 0x10011000 && addr < 0x10011008) return true;  // Keyboard
+    if (addr >= 0x21000000 && addr < 0x21200000) return true;  // VGA
+    if (addr >= 0x02000000 && addr < 0x02010000) return true;  // CLINT
+    return false;
+}
+
+static void (*ref_difftest_memcpy)(uint32_t, void*, size_t, bool);
+static void (*ref_difftest_regcpy)(void*, bool);
+static void (*ref_difftest_exec)(uint64_t);
+
 static bool difftest_check() {
+    if (difftest_skip) {
+        ref_difftest_regcpy(&npc_cpu, DIFFTEST_TO_REF);
+        difftest_skip = false;
+        return true;
+    }
+
     CPU_state ref_cpu = {};
     ref_difftest_exec(1);
     ref_difftest_regcpy(&ref_cpu, DIFFTEST_TO_DUT);
@@ -194,7 +228,6 @@ static bool difftest_check() {
         printf("  mstatus  : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mstatus, npc_cpu.csr.mstatus);
         printf("  mtvec    : ref=0x%08x npc=0x%08x\n", ref_cpu.csr.mtvec, npc_cpu.csr.mtvec);
     }
-    difftest_commit = false;
     return pass;
 }
 
@@ -211,16 +244,12 @@ static void init_difftest(const char *ref_so, size_t img_size) {
     ref_difftest_init(0);
     ref_difftest_memcpy(0x30000000, flash_data, img_size, DIFFTEST_TO_REF);
 
-    // 初始化 NPC 状态并同步到 REF
     npc_cpu.pc = 0x30000000;
     npc_cpu.csr.mstatus = 0x1800;
     ref_difftest_regcpy(&npc_cpu, DIFFTEST_TO_REF);
 
     printf("[difftest] initialized with %s\n", ref_so);
 }
-#else
-extern "C" void sim_set_gpr(int idx, int val) {}
-extern "C" void sim_difftest(int pc, int dnpc, int mcause, int mepc, int mstatus, int mtvec) {}
 #endif
 
 // 调试日志 DPI-C
@@ -234,6 +263,11 @@ extern "C" void sim_mtrace(int pc, int addr, int data, char is_write, int size) 
 #ifdef LOG_ON
     printf("[mtrace] pc=0x%08x %c addr=0x%08x data=0x%08x size=%d\n",
            (uint32_t)pc, is_write ? 'W' : 'R', (uint32_t)addr, (uint32_t)data, size);
+#endif
+#ifdef DIFFTEST_ON
+    if (is_peripheral_addr((uint32_t)addr)) {
+        difftest_skip = true;
+    }
 #endif
 }
 
@@ -309,6 +343,10 @@ int main(int argc, char **argv) {
 
     printf("--- ysyxSoC Simulation Start ---\n");
 
+    const long INST_TIMEOUT = 10000;
+    long last_commit_cycle = 0;
+    long inst_count = 0;
+
 #ifdef MAX_CYCLES
     for (long i = 0; i < MAX_CYCLES; i++) {
 #else
@@ -316,12 +354,14 @@ int main(int argc, char **argv) {
 #endif
         one_cycle();
         if (ebreak_flag) {
-            printf("ebreak detected at cycle %ld\n", i);
+            printf("ebreak detected at cycle %ld, %ld instructions\n", i, inst_count);
             break;
         }
+
+        if (inst_commit) {
+            last_commit_cycle = i;
+            inst_count++;
 #ifdef DIFFTEST_ON
-        if (difftest_commit) {
-            difftest_commit = false;
             if (!difftest_check()) {
                 printf("[difftest] FAIL at cycle %ld\n", i);
 #ifdef TRACE_ON
@@ -331,8 +371,19 @@ int main(int argc, char **argv) {
                 delete contextp;
                 return 1;
             }
-        }
 #endif
+            inst_commit = false;
+        }
+
+        if (i - last_commit_cycle > INST_TIMEOUT) {
+            watchdog_dump(i, last_commit_cycle);
+#ifdef TRACE_ON
+            tfp->close();
+#endif
+            delete top;
+            delete contextp;
+            return 1;
+        }
     }
 
     if (!ebreak_flag) {
