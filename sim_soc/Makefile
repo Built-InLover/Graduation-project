@@ -2,7 +2,9 @@
 
 TOPNAME = ysyxSoCFull
 YSYXSOC_HOME = $(abspath ../ysyxSoC)
+PLAYGROUND_HOME = $(abspath ../playground)
 NPC_BUILD = $(abspath ../build)
+MILL ?= $(abspath ../mill)
 NVBOARD_HOME ?= /home/lj/ysyx-workbench/nvboard
 NXDC_FILES = $(abspath ./constr/ysyxSoCFull.nxdc)
 SRC_AUTO_BIND = $(abspath ./build/auto_bind.cpp)
@@ -57,6 +59,7 @@ INC_PATH += $(YSYXSOC_HOME)/perip/uart16550/rtl
 INC_PATH += $(YSYXSOC_HOME)/perip/spi/rtl
 
 GENERATED_SV = $(NPC_BUILD)/ysyx_23060000.sv
+PLAYGROUND_SCALA_SRCS := $(shell find $(PLAYGROUND_HOME)/src -name "*.scala")
 
 $(SRC_AUTO_BIND): $(NXDC_FILES)
 	@mkdir -p $(dir $@)
@@ -73,13 +76,15 @@ LDFLAGS += -ldl
 endif
 
 # 生成 Verilog 并修正 Chisel 信号命名 → ysyxSoC 接口格式
-verilog:
-	cd $(abspath ..) && mill playground.runMain top.main_ysyxsoc
+$(GENERATED_SV): $(PLAYGROUND_SCALA_SRCS)
+	cd $(abspath ..) && $(MILL) -i playground.runMain top.main_ysyxsoc
 	@# 去掉 _bits_ 前缀，合并通道握手信号名（aw_valid → awvalid 等）
 	sed -i 's/_bits_//g' $(GENERATED_SV)
 	sed -i 's/io_master_\(aw\|w\|b\|ar\|r\)_\(valid\|ready\)/io_master_\1\2/g' $(GENERATED_SV)
 	sed -i 's/io_slave_\(aw\|w\|b\|ar\|r\)_\(valid\|ready\)/io_slave_\1\2/g' $(GENERATED_SV)
 	sed -i '/^\/\/ ----- 8< ----- FILE "firrtl_black_box_resource_files.f"/,$$d' $(GENERATED_SV)
+
+verilog: $(GENERATED_SV)
 
 default: sim
 

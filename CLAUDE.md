@@ -125,10 +125,12 @@ NEMU（TARGET_SHARE 模式）已彻底去掉 pmem，改为独立地址空间：m
 cd sim_soc && make verilog
 ```
 自动完成：mill 生成 → 去掉 `_bits_` → 合并握手信号名（`aw_valid` → `awvalid`）→ 清理 BlackBox 资源列表
+同时，`sim` / `run` 现已通过 Make 依赖自动跟踪 `playground/src/**/*.scala`；只要 Scala 源比 `build/ysyx_23060000.sv` 更新，执行 `make -C sim_soc sim` 或经 AM 的 `make run` 都会先自动重新生成 CPU Verilog，再进入 Verilator。
 
 ### 6. 仿真环境（sim_soc/）
 - `sim_soc/Makefile` — verilator 编译，顶层 ysyxSoCFull，含 --timescale --no-timing --trace-fst --autoflush
   - `verilog` 目标：mill 生成 + sed 信号名修正（一条命令完成）
+  - `build/ysyx_23060000.sv` 作为显式目标依赖 `playground/src/**/*.scala`；`sim`/`run` 会在其过期时自动 regenerate，避免继续吃旧 RTL
   - YSYXSOC_HOME = `$(abspath ../../ysyxSoC)` （注意相对路径基于 sim_soc/）
   - 包含 ysyxSoC/perip 下所有 .v，include uart16550/rtl 和 spi/rtl
 - `sim_soc/test_bench_soc.cpp` — 仿真驱动
