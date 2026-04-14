@@ -19,6 +19,7 @@
 !picturecode.md
 !device/*.md
 !build.sc
+!README.md
 build/
 
 # Verilator generated
