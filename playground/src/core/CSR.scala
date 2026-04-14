@@ -13,10 +13,12 @@ class SimEbreak extends BlackBox with HasBlackBoxInline {
     """module SimEbreak(
       |  input trigger
       |);
+      |`ifdef SIMULATION
       |  import "DPI-C" function void sim_ebreak();
       |  always @(*) begin
       |    if (trigger) sim_ebreak();
       |  end
+      |`endif
       |endmodule
       |""".stripMargin)
 }

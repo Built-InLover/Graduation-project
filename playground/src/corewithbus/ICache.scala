@@ -43,6 +43,8 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
       val resp = Decoupled(new ICacheResp(cfg))
     }
     val bus = new AXI4Interface(AXI4Params(cfg.addrBits, cfg.dataBits, 4))
+    val perf_hit  = Output(Bool())
+    val perf_miss = Output(Bool())
   })
 
   val sIdle :: sLookup :: sMissReq :: sMissResp :: sResp :: Nil = Enum(5)
@@ -58,9 +60,14 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
   val respExceptionReg = RegInit(false.B)
 
   val validArray = RegInit(VecInit(Seq.fill(cfg.nSets)(VecInit(Seq.fill(cfg.nWays)(false.B)))))
-  val tagArray   = RegInit(VecInit(Seq.fill(cfg.nSets)(VecInit(Seq.fill(cfg.nWays)(0.U(cfg.tagBits.W))))))
-  val dataArray  = RegInit(VecInit(Seq.fill(cfg.nSets)(VecInit(Seq.fill(cfg.nWays)(0.U(cfg.dataBits.W))))))
+  val tagMem     = Seq.fill(cfg.nWays)(SyncReadMem(cfg.nSets, UInt(cfg.tagBits.W)))
+  val dataMem    = Seq.fill(cfg.nWays)(SyncReadMem(cfg.nSets, UInt(cfg.dataBits.W)))
   val rrPtr      = RegInit(VecInit(Seq.fill(cfg.nSets)(0.U(cfg.wayBits.W))))
+
+  // SyncReadMem 读：在 req.fire 时用组合逻辑地址发起读，下一拍（sLookup）数据可用
+  val readIndex = setIndex(io.cpu.req.bits.addr)
+  val tagReadData  = VecInit(tagMem.map(_.read(readIndex, io.cpu.req.fire)))
+  val dataReadData = VecInit(dataMem.map(_.read(readIndex, io.cpu.req.fire)))
 
   private def lineAddr(addr: UInt): UInt = Cat(addr(cfg.addrBits - 1, cfg.offsetBits), 0.U(cfg.offsetBits.W))
   private def setIndex(addr: UInt): UInt = addr(cfg.offsetBits + cfg.indexBits - 1, cfg.offsetBits)
@@ -76,13 +83,11 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
   }
 
   val lookupValids = validArray(reqIndexReg)
-  val lookupTags   = tagArray(reqIndexReg)
-  val lookupData   = dataArray(reqIndexReg)
 
   val hitVec = Wire(Vec(cfg.nWays, Bool()))
   val invalidVec = Wire(Vec(cfg.nWays, Bool()))
   for (way <- 0 until cfg.nWays) {
-    hitVec(way) := lookupValids(way) && (lookupTags(way) === reqTagReg)
+    hitVec(way) := lookupValids(way) && (tagReadData(way) === reqTagReg)
     invalidVec(way) := !lookupValids(way)
   }
 
@@ -122,7 +127,7 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
   switch(state) {
     is(sLookup) {
       when(reqCacheableReg && hit) {
-        respDataReg := lookupData(hitWay)
+        respDataReg := dataReadData(hitWay)
         respExceptionReg := false.B
         state := sResp
       }.otherwise {
@@ -144,14 +149,14 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
         respExceptionReg := io.bus.r.bits.resp =/= 0.U
 
         when(refillEnableReg && (io.bus.r.bits.resp === 0.U)) {
-          for (set <- 0 until cfg.nSets) {
-            when(reqIndexReg === set.U) {
-              validArray(set)(victimWayReg) := true.B
-              tagArray(set)(victimWayReg) := reqTagReg
-              dataArray(set)(victimWayReg) := io.bus.r.bits.data
-              rrPtr(set) := victimWayReg + 1.U
+          validArray(reqIndexReg)(victimWayReg) := true.B
+          for (way <- 0 until cfg.nWays) {
+            when(victimWayReg === way.U) {
+              tagMem(way).write(reqIndexReg, reqTagReg)
+              dataMem(way).write(reqIndexReg, io.bus.r.bits.data)
             }
           }
+          rrPtr(reqIndexReg) := victimWayReg + 1.U
         }
 
         state := sResp
@@ -164,4 +169,8 @@ class ICache(cfg: ICacheConfig = ICacheConfig()) extends Module {
       }
     }
   }
+
+  // 性能计数器脉冲（仅 cacheable 访问）
+  io.perf_hit  := (state === sLookup) && reqCacheableReg && hit
+  io.perf_miss := (state === sLookup) && reqCacheableReg && !hit
 }

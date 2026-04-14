@@ -7,7 +7,6 @@ test:
 	$(MILL) -i $(PRJ).test
 
 verilog:
-	$(call git_commit, "generate verilog")
 	mkdir -p $(BUILD_DIR)
 	$(MILL) -i $(PRJ).runMain top.main --target-dir $(BUILD_DIR)
 	head -n -2 ./build/top.sv > temp.sv && mv temp.sv ./build/top.sv
@@ -34,7 +33,6 @@ clean:
 .PHONY: test verilog help reformat checkformat clean
 
 sim:
-	$(call git_commit, "sim RTL") # DO NOT REMOVE THIS LINE!!!
 	@echo "Write this Makefile by yourself."
 
 -include ../Makefile

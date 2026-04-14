@@ -129,17 +129,24 @@ class DistributedCore extends Module {
   val idu_fire = idu.io.out.fire
   val is_lsu   = idu.io.out.bits.fuType === FuType.lsu
 
-  order_q.io.enq.valid := idu_fire && !idu.io.flush 
+  order_q.io.enq.valid := idu_fire && !idu.io.flush
   order_q.io.enq.bits  := is_lsu
+
+  // futype_q: 镜像 order_q，记录每条指令的 FuType，供 commit 时统计
+  val futype_q = Module(new Queue(UInt(3.W), entries = 8, pipe = true))
+  futype_q.io.enq.valid := idu_fire && !idu.io.flush
+  futype_q.io.enq.bits  := idu.io.out.bits.fuType
 
   // 2. 复位逻辑
   // 全局 Reset 或 WBU 异常时清空令牌队列
   order_q.reset := reset.asBool || flush_all
+  futype_q.reset := reset.asBool || flush_all
 
   // 3. 出队 (Deq): 谁来查账本？
   wbu.io.next_is_lsu   := order_q.io.deq.bits
   wbu.io.token_valid   := order_q.io.deq.valid
   order_q.io.deq.ready := wbu.io.token_pop // WBU 每处理完一条就弹出一个
+  futype_q.io.deq.ready := wbu.io.token_pop
 
   exu.io.rob_empty := order_q.io.count === 1.U
 
@@ -291,4 +298,23 @@ class DistributedCore extends Module {
   sim_difftest.io.dnpc   := io.debug_dnpc
   sim_difftest.io.regs   := io.debug_regs
   sim_difftest.io.csrs   := io.debug_csr
+
+  // ==================================================================
+  //                        9. 性能计数器 (Performance Counters)
+  // ==================================================================
+  val user_mode = RegInit(false.B)
+  when(ifu.io.out.fire && ifu.io.out.bits.pc(31, 28) === 0xa.U) {
+    user_mode := true.B
+  }
+
+  val sim_perf = Module(new SimPerfCounters)
+  sim_perf.io.clock          := clock
+  sim_perf.io.reset          := reset.asBool
+  sim_perf.io.ifu_fire       := ifu.io.out.fire
+  sim_perf.io.idu_fire       := idu_fire && !idu.io.flush
+  sim_perf.io.icache_hit     := ifu.io.perf_icache_hit
+  sim_perf.io.icache_miss    := ifu.io.perf_icache_miss
+  sim_perf.io.user_mode      := user_mode
+  sim_perf.io.commit_valid   := io.inst_over
+  sim_perf.io.commit_fuType  := futype_q.io.deq.bits
 }

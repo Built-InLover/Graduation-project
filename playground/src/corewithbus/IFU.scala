@@ -15,6 +15,8 @@ class IFU(icacheCfg: ICacheConfig = ICacheConfig()) extends Module {
     val redirect = Flipped(Valid(new Bundle {
       val targetPC = UInt(32.W)
     }))
+    val perf_icache_hit  = Output(Bool())
+    val perf_icache_miss = Output(Bool())
   })
 
   val pipelineDepth = 4
@@ -70,4 +72,7 @@ class IFU(icacheCfg: ICacheConfig = ICacheConfig()) extends Module {
   io.out.bits.inst := inst_queue.io.deq.bits.data
   io.out.bits.pc := meta_queue.io.deq.bits.pc
   io.out.bits.exception := inst_queue.io.deq.bits.exception
+
+  io.perf_icache_hit  := icache.io.perf_hit
+  io.perf_icache_miss := icache.io.perf_miss
 }

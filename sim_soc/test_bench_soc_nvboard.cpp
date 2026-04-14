@@ -244,6 +244,80 @@ extern "C" void sim_regtrace(int pc, int rd, int wdata) {
 #endif
 }
 
+// ==================== 性能计数器 (Performance Counters) ====================
+static const char *fu_names[] = {"ALU", "LSU", "MDU", "CSR", "BRU"};
+static inline int futype_to_idx(int ft) { return ft == 5 ? 4 : ft; }
+
+static struct {
+    uint64_t total_cycles, user_cycles;
+    uint64_t ifu_fetch, ifu_fetch_user;
+    uint64_t idu_dispatch, idu_dispatch_user;
+    uint64_t icache_hit_total, icache_miss_total;
+    uint64_t icache_hit_user, icache_miss_user;
+    uint64_t commit_count[5], commit_user[5];
+    uint64_t category_cycles[5];
+    uint64_t last_user_commit_ucycle;
+    bool     has_first_user_commit;
+} perf = {};
+
+extern "C" void sim_perf_event(char ifu, char idu, char ic_hit, char ic_miss,
+                                char user, char commit, char futype) {
+    perf.total_cycles++;
+    perf.ifu_fetch += ifu;
+    perf.idu_dispatch += idu;
+    perf.icache_hit_total += ic_hit;
+    perf.icache_miss_total += ic_miss;
+    if (user) {
+        perf.user_cycles++;
+        perf.ifu_fetch_user += ifu;
+        perf.idu_dispatch_user += idu;
+        perf.icache_hit_user += ic_hit;
+        perf.icache_miss_user += ic_miss;
+        if (commit) {
+            int idx = futype_to_idx(futype);
+            perf.commit_user[idx]++;
+            if (perf.has_first_user_commit) {
+                uint64_t delta = perf.user_cycles - perf.last_user_commit_ucycle;
+                perf.category_cycles[idx] += delta;
+            }
+            perf.has_first_user_commit = true;
+            perf.last_user_commit_ucycle = perf.user_cycles;
+        }
+    }
+    if (commit) {
+        perf.commit_count[futype_to_idx(futype)]++;
+    }
+}
+
+static void print_perf_counters() {
+    auto& p = perf;
+    uint64_t ic_total = p.icache_hit_total + p.icache_miss_total;
+    uint64_t ic_user  = p.icache_hit_user + p.icache_miss_user;
+    uint64_t total_commit = 0, user_commit = 0;
+    for (int i = 0; i < 5; i++) { total_commit += p.commit_count[i]; user_commit += p.commit_user[i]; }
+    double fetch_waste = p.ifu_fetch ? 100.0 * (p.ifu_fetch - p.idu_dispatch) / p.ifu_fetch : 0.0;
+    double ipc = p.user_cycles ? (double)user_commit / p.user_cycles : 0.0;
+
+    printf("=== Performance Counters ===\n");
+    printf("  Cycles:         total=%lu user=%lu\n", p.total_cycles, p.user_cycles);
+    printf("  IFU fetches:    total=%lu user=%lu\n", p.ifu_fetch, p.ifu_fetch_user);
+    printf("  IDU dispatches: total=%lu user=%lu\n", p.idu_dispatch, p.idu_dispatch_user);
+    printf("  Fetch waste:    %.2f%%\n", fetch_waste);
+    printf("  IPC (user):     %.4f\n", ipc);
+    printf("  ICache (total): hit=%lu miss=%lu total=%lu rate=%.2f%%\n",
+           p.icache_hit_total, p.icache_miss_total, ic_total,
+           ic_total ? 100.0 * p.icache_hit_total / ic_total : 0.0);
+    printf("  ICache (user):  hit=%lu miss=%lu total=%lu rate=%.2f%%\n",
+           p.icache_hit_user, p.icache_miss_user, ic_user,
+           ic_user ? 100.0 * p.icache_hit_user / ic_user : 0.0);
+    printf("  Instruction Mix (user):\n");
+    for (int i = 0; i < 5; i++) {
+        double pct = user_commit ? 100.0 * p.commit_user[i] / user_commit : 0.0;
+        double cpi = p.commit_user[i] ? (double)p.category_cycles[i] / p.commit_user[i] : 0.0;
+        printf("    %s: %6lu (%5.2f%%)  avg CPI=%.2f\n", fu_names[i], p.commit_user[i], pct, cpi);
+    }
+}
+
 static VysyxSoCFull *top;
 static VerilatedContext *contextp;
 void nvboard_bind_all_pins(VysyxSoCFull* top);
@@ -324,6 +398,7 @@ int main(int argc, char **argv) {
         one_cycle();
         if (ebreak_flag) {
             printf("ebreak detected at cycle %ld\n", i);
+            print_perf_counters();
             break;
         }
 #ifdef DIFFTEST_ON

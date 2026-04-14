@@ -164,6 +164,19 @@ NEMU（TARGET_SHARE 模式）已彻底去掉 pmem，改为独立地址空间：m
 - 修复：`.rodata` 末尾改为 ALIGN(8)，消除空洞
 - `ioe.c` 改为 switch-case 分发（不再用函数指针表），保留此实现
 
+### 27. 性能计数器（DPI-C BlackBox）
+- `core/SimDebug.scala` — SimPerfCounters BlackBox，每周期调用 `sim_perf_event()` DPI-C
+- `corewithbus/ICache.scala` — 新增 `perf_hit`/`perf_miss` 输出（仅 cacheable 访问）
+- `corewithbus/IFU.scala` — 透传 ICache perf 信号
+- `top/top.scala` — `user_mode` 锁存 + `futype_q`（镜像 order_q）+ SimPerfCounters 实例化
+- `sim_soc/test_bench_soc.cpp` / `test_bench_soc_nvboard.cpp` — C++ 侧累计计数，ebreak 时打印报告
+- 统计内容：
+  - Cycles（total/user）、IFU fetch、IDU dispatch、Fetch waste%、IPC(user)
+  - ICache hit/miss（total/user 两套）
+  - 指令分类（ALU/BRU/LSU/MDU/CSR）commit 数量、占比、avg CPI
+- user_mode 区分 bootloader（Flash/SRAM）和用户程序（SDRAM），排除搬运阶段的统计干扰
+- FuType 通过 futype_q 从 IDU dispatch 传递到 WBU commit 点
+
 ### Clangd 配置
 - 仓库根目录 `compile_commands.json`（48 条编译命令）
 - `.clangd` 配置文件 + `tools/gen_compile_commands.sh` 一键脚本
